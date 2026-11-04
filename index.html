@@ -913,6 +913,7 @@ function renderPanel(){
       <button class="chip ${panelTab==="libro"?'on':''}" data-pt="libro">Libro diario</button>
       <button class="chip ${panelTab==="mayor"?'on':''}" data-pt="mayor">Libro mayor</button>
       <button class="chip ${panelTab==="cfdis"?'on':''}" data-pt="cfdis">CFDIs / IVA</button>
+      <button class="chip ${panelTab==="isr"?'on':''}" data-pt="isr">ISR</button>
       <button class="chip ${panelTab==="balanza"?'on':''}" data-pt="balanza">Balanza</button>
       <button class="chip ${panelTab==="catalogo"?'on':''}" data-pt="catalogo">Catálogo SAT</button>
     </div>
@@ -922,6 +923,7 @@ function renderPanel(){
   else if(panelTab==="libro")renderLibro();
   else if(panelTab==="mayor")renderMayor();
   else if(panelTab==="cfdis")renderCFDI();
+  else if(panelTab==="isr")renderISR();
   else if(panelTab==="balanza")renderBalanza();
   else if(panelTab==="catalogo")renderCatSat();
   else renderResumen();
@@ -1449,6 +1451,110 @@ function renderCFDI(){
   document.querySelectorAll("#panelBody .prod[data-del]").forEach(el=>{el.ondblclick=async()=>{
     const id=el.dataset.del;const {error}=await sb.from("cfdis").delete().eq("id",id);
     if(error){toast("Error al borrar");return;}STATE.cfdis=(STATE.cfdis||[]).filter(x=>String(x.id)!==String(id));toast("CFDI eliminado");renderCFDI();};});
+}
+
+// ============ ISR PROVISIONAL (PF Actividad Empresarial 612, acumulado) ============
+// Tarifa mensual ISR 2026 — art. 96 LISR (Anexo 8 RMF 2026, DOF 28-12-2025).
+// [límite inferior, límite superior, cuota fija, % sobre excedente]
+const TARIFA_ISR=[
+  [0.01,844.59,0.00,1.92],[844.60,7168.51,16.22,6.40],[7168.52,12598.02,420.95,10.88],
+  [12598.03,14644.64,1011.68,16.00],[14644.65,17533.64,1339.14,17.92],[17533.65,35362.83,1856.84,21.36],
+  [35362.84,55736.68,5665.16,23.52],[55736.69,106410.50,10457.09,30.00],[106410.51,141880.66,25659.23,32.00],
+  [141880.67,425641.99,37009.69,34.00],[425642.00,Infinity,133488.54,35.00]
+];
+function isrTarifa(base,nMeses){ // tarifa elevada al nº de meses del periodo acumulado
+  if(base<=0||nMeses<1)return 0;
+  for(let i=TARIFA_ISR.length-1;i>=0;i--){
+    const li=TARIFA_ISR[i][0]*nMeses;
+    if(base>=li)return TARIFA_ISR[i][2]*nMeses+(base-li)*(TARIFA_ISR[i][3]/100);
+  }
+  return 0;
+}
+function isrInicio(){const s=(fiscCfg().inicio||"2026-11").split("-");return {y:+s[0],m:(+s[1]||1)-1};}
+function ymStr(y,m){return y+"-"+String(m+1).padStart(2,"0");}
+function cfdiAcum(tipo,iniYM,finYM,field){
+  return (STATE.cfdis||[]).filter(c=>c.tipo===tipo&&(c.fecha||"").slice(0,7)>=iniYM&&(c.fecha||"").slice(0,7)<=finYM)
+    .reduce((a,c)=>a+(c.tipo_comp==="E"?-1:1)*(+c[field]||0),0);
+}
+// Serie mes a mes desde el inicio del régimen hasta el mes seleccionado
+function isrSerie(){
+  const ini=isrInicio(), iniYM=ymStr(ini.y,ini.m);
+  const out=[]; let pagosAcum=0, y=ini.y, m=ini.m, k=0;
+  while(k<240){
+    k++; const curYM=ymStr(y,m);
+    const ing=cfdiAcum("emitido",iniYM,curYM,"subtotal");
+    const ded=cfdiAcum("recibido",iniYM,curYM,"subtotal");
+    const base=Math.max(0,ing-ded);
+    const causado=isrTarifa(base,k);
+    const ret=cfdiAcum("emitido",iniYM,curYM,"ret_isr");
+    const pago=Math.max(0,causado-ret-pagosAcum);
+    out.push({y,m,k,ing,ded,base,causado,ret,pagosPrev:pagosAcum,pago});
+    pagosAcum+=pago;
+    if(y===erY&&m===erM)break;
+    m++; if(m>11){m=0;y++;}
+    if(y>erY||(y===erY&&m>erM))break;
+  }
+  return out;
+}
+function isrData(){
+  const ini=isrInicio();
+  if(erY<ini.y||(erY===ini.y&&erM<ini.m))return {fuera:true,ini};
+  const serie=isrSerie();
+  const d=serie[serie.length-1]||null;
+  return {fuera:false,ini,d,serie};
+}
+function renderISR(){
+  erInit();const r=isrData();const c=fiscCfg();
+  const row=(lbl,val,o={})=>`<div class="totline" style="font-size:${o.big?16:14}px;${o.bd?'border-top:1px solid var(--line);padding-top:8px;margin-top:6px;':''}${o.sub?'padding-left:12px;color:var(--muted);':''}"><span>${o.b?`<b>${lbl}</b>`:lbl}</span><span class="num" style="${o.col?`color:${o.col};`:''}${o.b?'font-weight:700':''}">${(o.neg?"−":"")+money(Math.abs(val))}</span></div>`;
+  const iniVal=ymStr(r.ini.y,r.ini.m);
+  const header=`${mesNav()}
+    <div class="card pad" style="margin-bottom:11px">
+      <label class="f">Primer mes en el régimen 612</label>
+      <input class="inp" type="month" id="isrIni" value="${iniVal}" max="${ymStr(erY,erM)}">
+      <p class="hint" style="margin-top:6px">Desde aquí arranca el acumulado. No se mezcla nada de RESICO.</p>
+    </div>`;
+  if(r.fuera){
+    $("panelBody").innerHTML=header+`<div class="card pad"><p class="hint" style="margin:0">El mes seleccionado (${MESES[erM]} ${erY}) es <b>anterior</b> a tu inicio en el 612 (${MESES[r.ini.m]} ${r.ini.y}). Avanza con › a un mes dentro del régimen.</p></div>`;
+    bindMesNav(renderISR);$("isrIni").onchange=e=>{if(e.target.value){c.inicio=e.target.value;fiscCfgSave();renderISR();}};
+    return;
+  }
+  const d=r.d;
+  $("panelBody").innerHTML=header+`
+    <div class="kpis" style="margin-bottom:11px">
+      <div class="kpi"><div class="l">ISR del mes a pagar</div><div class="v num" style="color:${d.pago>0?'var(--danger)':'var(--green)'}">${money0(d.pago)}</div><div class="s">${MESES[erM]} ${erY} · mes ${d.k} del régimen</div></div>
+      <div class="kpi"><div class="l">Utilidad gravable acum.</div><div class="v num">${money0(d.base)}</div><div class="s">${MESES[r.ini.m].slice(0,3)}→${MESES[erM].slice(0,3)} ${erY}</div></div>
+    </div>
+    <div class="card pad col">
+      ${row("Ingresos acumulados (facturados)",d.ing,{col:"var(--ok)"})}
+      ${row("Deducciones acumuladas",d.ded,{neg:true,col:"var(--danger)"})}
+      ${row("Utilidad gravable acumulada",d.base,{b:true,bd:true})}
+      ${row("ISR causado (tarifa acumulada)",d.causado,{bd:true})}
+      ${row("(−) Retenciones de ISR",d.ret,{neg:true,sub:true})}
+      ${row("(−) Pagos provisionales anteriores",d.pagosPrev,{neg:true,sub:true})}
+      <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${d.pago>0?'var(--danger)':'var(--green)'}"><span>ISR provisional del mes</span><span class="num">${money(d.pago)}</span></div>
+    </div>
+    <button class="btn btn-o btn-block" id="isrPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
+    <p class="hint" style="margin-top:8px"><b>Estimado</b> con la tarifa mensual 2026 (art. 96), acumulado desde ${MESES[r.ini.m]} ${r.ini.y}. No incluye PTU ni pérdidas de años anteriores. Tu contador confirma la declaración oficial.</p>`;
+  bindMesNav(renderISR);
+  $("isrIni").onchange=e=>{if(e.target.value){c.inicio=e.target.value;fiscCfgSave();renderISR();}};
+  $("isrPrint").onclick=printISR;
+}
+function printISR(){
+  const r=isrData();if(r.fuera)return;const d=r.d;
+  const line=(l,val,o={})=>`<tr style="${o.bd?'border-top:1px solid #d9d4c8;':''}"><td style="padding:6px 0;${o.sub?'padding-left:16px;color:#5C665C;':''}${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${l}</td><td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${(o.neg?"−":"")+money(Math.abs(val))}</td></tr>`;
+  const inner=`${repHeader("ISR Provisional")}
+    <p style="font-size:12.5px;color:#5C665C;margin:0 0 10px">Pago provisional acumulado — mes ${d.k} del régimen (${MESES[erM]} ${erY}). Desde ${MESES[r.ini.m]} ${r.ini.y}.</p>
+    <table style="width:100%;border-collapse:collapse">
+      ${line("Ingresos acumulados (facturados)",d.ing)}
+      ${line("Deducciones acumuladas",d.ded,{neg:true})}
+      ${line("Utilidad gravable acumulada",d.base,{b:true,bd:true})}
+      ${line("ISR causado (tarifa acumulada)",d.causado,{bd:true})}
+      ${line("(−) Retenciones de ISR",d.ret,{neg:true,sub:true})}
+      ${line("(−) Pagos provisionales anteriores",d.pagosPrev,{neg:true,sub:true})}
+      ${line("ISR provisional del mes",d.pago,{b:true,big:true,bd:true})}
+    </table>
+    <p style="font-size:11px;color:#8A9184;margin-top:14px">Estimado con tarifa mensual 2026 (art. 96 LISR, Anexo 8 RMF). PF Actividad Empresarial 612, flujo de efectivo. No incluye PTU ni pérdidas anteriores. A confirmar con tu contador.</p>`;
+  doPrint(inner);
 }
 
 // ============ helpers ============
