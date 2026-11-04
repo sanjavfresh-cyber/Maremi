@@ -165,7 +165,7 @@ const LOGO_FULL="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAggAAAFcCAYAAACtC
 </script>
 <script>
 const CFG_KEY="markemi_cfg", THEME_KEY="markemi_theme", COM_KEY="markemi_comercio";
-let sb=null, CID=null, COMERCIOS=[], STATE={catalogo:[],ventas:[],clientes:[],gastos:[],prestamos:[],caja:[]};
+let sb=null, CID=null, COMERCIOS=[], STATE={catalogo:[],ventas:[],clientes:[],gastos:[],prestamos:[],caja:[],cfdis:[]};
 const $=(id)=>document.getElementById(id);
 const root=()=>$("root");
 const money=n=>"$"+(Math.round((+n||0)*100)/100).toLocaleString("es-MX",{minimumFractionDigits:0,maximumFractionDigits:2});
@@ -306,6 +306,7 @@ async function loadAll(){
   STATE.gastos=gc.data||[];
   STATE.prestamos=lc.data||[];
   STATE.caja=kc.data||[];
+  try{const xc=await sb.from("cfdis").select("*").eq("comercio_id",CID).order("fecha",{ascending:false});STATE.cfdis=(xc&&xc.data)||[];}catch(e){STATE.cfdis=[];}
 }
 
 // ============ APP SHELL ============
@@ -910,11 +911,19 @@ function renderPanel(){
       <button class="chip ${panelTab==="resumen"?'on':''}" data-pt="resumen">Resumen</button>
       <button class="chip ${panelTab==="estado"?'on':''}" data-pt="estado">Estado de resultados</button>
       <button class="chip ${panelTab==="libro"?'on':''}" data-pt="libro">Libro diario</button>
+      <button class="chip ${panelTab==="mayor"?'on':''}" data-pt="mayor">Libro mayor</button>
+      <button class="chip ${panelTab==="cfdis"?'on':''}" data-pt="cfdis">CFDIs / IVA</button>
+      <button class="chip ${panelTab==="balanza"?'on':''}" data-pt="balanza">Balanza</button>
+      <button class="chip ${panelTab==="catalogo"?'on':''}" data-pt="catalogo">Catálogo SAT</button>
     </div>
     <div id="panelBody"></div></div>`);
   document.querySelectorAll(".chip[data-pt]").forEach(c=>c.onclick=()=>{panelTab=c.dataset.pt;renderPanel();});
   if(panelTab==="estado")renderEstado();
   else if(panelTab==="libro")renderLibro();
+  else if(panelTab==="mayor")renderMayor();
+  else if(panelTab==="cfdis")renderCFDI();
+  else if(panelTab==="balanza")renderBalanza();
+  else if(panelTab==="catalogo")renderCatSat();
   else renderResumen();
 }
 
@@ -967,9 +976,8 @@ function renderResumen(){
   }
 }
 
-// --- ESTADO DE RESULTADOS (mensual, ingresos al cobrar) ---
-function renderEstado(){
-  erInit();
+// --- DATOS de los reportes (se usan para mostrar y para imprimir) ---
+function estadoData(){
   const noB=STATE.ventas.filter(v=>!v.borrador);
   const cobradas=noB.filter(v=>v.pago==="pagado"&&inMonth(v.fecha));
   const ingresos=cobradas.reduce((a,v)=>a+ +v.venta,0);
@@ -982,37 +990,38 @@ function renderEstado(){
   const neta=bruto-gastosTot;
   const margen=ingresos>0?neta/ingresos*100:0;
   const porCobrarMes=noB.filter(v=>v.pago!=="pagado"&&inMonth(v.fecha)).reduce((a,v)=>a+ +v.venta,0);
-  const row=(lbl,val,o={})=>`<div class="totline" style="font-size:${o.big?16:14}px;${o.bd?'border-top:1px solid var(--line);padding-top:8px;margin-top:6px;':''}${o.sub?'padding-left:12px;color:var(--muted);':''}"><span>${o.b?`<b>${lbl}</b>`:lbl}</span><span class="num" style="${o.col?`color:${o.col};`:''}${o.b?'font-weight:700':''}">${o.neg?"−":""}${money(Math.abs(val))}</span></div>`;
-  $("panelBody").innerHTML=`${mesNav()}
-    <div class="card pad col">
-      ${row("Ingresos por ventas (cobradas)",ingresos,{col:"var(--ok)"})}
-      ${row("Costo de la mercancía vendida",costo,{neg:true,col:"var(--danger)"})}
-      ${row("Utilidad bruta",bruto,{b:true,bd:true,col:bruto>=0?'var(--green)':'var(--danger)'})}
-      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:8px 0 2px">Gastos de operación</div>
-      ${cats.length?cats.map(([c,m])=>row(c,m,{neg:true,sub:true})).join(""):`<div style="color:var(--faint);padding:4px 0 4px 12px;font-size:13px">Sin gastos este mes</div>`}
-      ${row("Total gastos",gastosTot,{neg:true,col:"var(--danger)"})}
-      <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${neta>=0?'var(--green)':'var(--danger)'}"><span>Utilidad neta</span><span class="num">${money(neta)}</span></div>
-      <div class="totline" style="font-size:13px;color:var(--muted)"><span>Margen neto</span><span class="num">${margen.toFixed(0)}%</span></div>
-    </div>
-    ${porCobrarMes>0?`<div class="card pad" style="margin-top:11px"><div class="totline" style="font-size:13px"><span>Ventas de ${MESES[erM]} aún por cobrar</span><span class="num" style="color:var(--warn)">${money0(porCobrarMes)}</span></div><p class="hint" style="margin:4px 0 0">Entran como ingreso cuando las marques como <b>Pagado</b>.</p></div>`:""}
-    <p class="hint" style="margin-top:10px">El ingreso cuenta <b>al cobrar</b> (notas pagadas). El costo es el de esas mismas ventas cobradas. ${cobradas.length} venta(s) cobrada(s) este mes.</p>`;
-  bindMesNav(renderEstado);
+  return {ingresos,costo,bruto,cats,gastosTot,neta,margen,porCobrarMes,nCobradas:cobradas.length};
 }
-
-// --- LIBRO DIARIO (mensual, con saldo corrido) ---
 function libroMovs(){
   const noB=STATE.ventas.filter(v=>!v.borrador);
   let mov=[];
-  STATE.caja.forEach(c=>mov.push({fecha:c.fecha,label:c.tipo==="fondo"?"Fondo":"Retiro",concepto:c.concepto||(c.tipo==="fondo"?"Aporte de fondo":"Retiro de caja"),monto:c.tipo==="fondo"?+c.monto:-(+c.monto)}));
+  STATE.caja.forEach(c=>mov.push({fecha:c.fecha,label:c.tipo==="fondo"?"Fondo":"Retiro",grupo:"Caja y capital",cuenta:c.tipo==="fondo"?"Aportaciones de fondo":"Retiros",concepto:c.concepto||(c.tipo==="fondo"?"Aporte de fondo":"Retiro de caja"),monto:c.tipo==="fondo"?+c.monto:-(+c.monto)}));
   noB.forEach(v=>{
-    if(+v.costo>0)mov.push({fecha:v.fecha,label:"Compra",concepto:"Mercancía — "+(v.cliente||("nota "+(v.folio||""))),monto:-(+v.costo)});
-    if(v.pago==="pagado")mov.push({fecha:v.fecha,label:"Cobro",concepto:(v.cliente||("nota "+(v.folio||""))),monto:+v.venta});
+    if(+v.costo>0)mov.push({fecha:v.fecha,label:"Compra",grupo:"Costo",cuenta:"Costo de ventas",concepto:"Mercancía — "+(v.cliente||("nota "+(v.folio||""))),monto:-(+v.costo)});
+    if(v.pago==="pagado")mov.push({fecha:v.fecha,label:"Cobro",grupo:"Ingresos",cuenta:"Ventas",concepto:(v.cliente||("nota "+(v.folio||""))),monto:+v.venta});
   });
-  STATE.gastos.forEach(g=>mov.push({fecha:g.fecha,label:"Gasto",concepto:g.concepto||(g.categoria||"Gasto"),monto:-(+g.monto)}));
+  STATE.gastos.forEach(g=>mov.push({fecha:g.fecha,label:"Gasto",grupo:"Gastos",cuenta:g.categoria||"Otro",concepto:g.concepto||(g.categoria||"Gasto"),monto:-(+g.monto)}));
   return mov;
 }
-function renderLibro(){
-  erInit();
+function mayorData(){
+  const ms=monthStartISO();
+  const monthMov=libroMovs().filter(m=>inMonth(m.fecha)).sort((a,b)=>a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0);
+  const ordenGrupo=["Ingresos","Costo","Gastos","Caja y capital"];
+  const grupos={};
+  monthMov.forEach(m=>{
+    const g=m.grupo||"Otros"; (grupos[g]||(grupos[g]={}));
+    (grupos[g][m.cuenta]||(grupos[g][m.cuenta]={movs:[],total:0}));
+    grupos[g][m.cuenta].movs.push(m); grupos[g][m.cuenta].total+=m.monto;
+  });
+  const out=[];
+  ordenGrupo.concat(Object.keys(grupos).filter(g=>ordenGrupo.indexOf(g)<0)).forEach(g=>{
+    if(!grupos[g])return;
+    const cuentas=Object.entries(grupos[g]).map(([nombre,d])=>({nombre,total:d.total,movs:d.movs})).sort((a,b)=>Math.abs(b.total)-Math.abs(a.total));
+    out.push({grupo:g,cuentas,total:cuentas.reduce((a,c)=>a+c.total,0)});
+  });
+  return out;
+}
+function libroData(){
   const mov=libroMovs();
   const ms=monthStartISO();
   const saldoIni=mov.filter(m=>m.fecha<ms).reduce((a,m)=>a+m.monto,0);
@@ -1021,22 +1030,427 @@ function renderLibro(){
   const rows=monthMov.map(m=>{saldo+=m.monto;return Object.assign({},m,{saldo});});
   const ingresos=monthMov.filter(m=>m.monto>0).reduce((a,m)=>a+m.monto,0);
   const egresos=monthMov.filter(m=>m.monto<0).reduce((a,m)=>a-m.monto,0);
+  return {saldoIni,rows,ingresos,egresos,saldoFinal:saldo};
+}
+
+// --- ESTADO DE RESULTADOS (mensual, ingresos al cobrar) ---
+function renderEstado(){
+  erInit();
+  const d=estadoData();
+  const sg=v=>(v<0?"−":"")+money(Math.abs(v));
+  const row=(lbl,val,o={})=>`<div class="totline" style="font-size:${o.big?16:14}px;${o.bd?'border-top:1px solid var(--line);padding-top:8px;margin-top:6px;':''}${o.sub?'padding-left:12px;color:var(--muted);':''}"><span>${o.b?`<b>${lbl}</b>`:lbl}</span><span class="num" style="${o.col?`color:${o.col};`:''}${o.b?'font-weight:700':''}">${o.signed?sg(val):(o.neg?"−":"")+money(Math.abs(val))}</span></div>`;
+  $("panelBody").innerHTML=`${mesNav()}
+    <div class="card pad col">
+      ${row("Ingresos por ventas (cobradas)",d.ingresos,{col:"var(--ok)"})}
+      ${row("Costo de la mercancía vendida",d.costo,{neg:true,col:"var(--danger)"})}
+      ${row("Utilidad bruta",d.bruto,{b:true,bd:true,signed:true,col:d.bruto>=0?'var(--green)':'var(--danger)'})}
+      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:8px 0 2px">Gastos de operación</div>
+      ${d.cats.length?d.cats.map(([c,m])=>row(c,m,{neg:true,sub:true})).join(""):`<div style="color:var(--faint);padding:4px 0 4px 12px;font-size:13px">Sin gastos este mes</div>`}
+      ${row("Total gastos",d.gastosTot,{neg:true,col:"var(--danger)"})}
+      <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${d.neta>=0?'var(--green)':'var(--danger)'}"><span>Utilidad neta</span><span class="num">${(d.neta<0?"−":"")+money(Math.abs(d.neta))}</span></div>
+      <div class="totline" style="font-size:13px;color:var(--muted)"><span>Margen neto</span><span class="num">${d.margen.toFixed(0)}%</span></div>
+    </div>
+    ${d.porCobrarMes>0?`<div class="card pad" style="margin-top:11px"><div class="totline" style="font-size:13px"><span>Ventas de ${MESES[erM]} aún por cobrar</span><span class="num" style="color:var(--warn)">${money0(d.porCobrarMes)}</span></div><p class="hint" style="margin:4px 0 0">Entran como ingreso cuando las marques como <b>Pagado</b>.</p></div>`:""}
+    <button class="btn btn-o btn-block" id="erPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
+    <p class="hint" style="margin-top:8px">El ingreso cuenta <b>al cobrar</b> (notas pagadas). El costo es el de esas mismas ventas cobradas. ${d.nCobradas} venta(s) cobrada(s) este mes.</p>`;
+  bindMesNav(renderEstado);
+  $("erPrint").onclick=printEstado;
+}
+
+// --- LIBRO DIARIO (mensual, con saldo corrido) ---
+function renderLibro(){
+  erInit();
+  const d=libroData();
   const col=m=>m>=0?"var(--ok)":"var(--danger)";
   const lblColor=l=>l==="Cobro"||l==="Fondo"?"var(--ok)":l==="Gasto"?"var(--danger)":l==="Compra"?"var(--warn)":"var(--muted)";
   $("panelBody").innerHTML=`${mesNav()}
     <div class="kpis" style="margin-bottom:11px">
-      <div class="kpi"><div class="l">Saldo inicial</div><div class="v num" style="color:var(--muted)">${money0(saldoIni)}</div></div>
-      <div class="kpi"><div class="l">Saldo final</div><div class="v num" style="color:${saldo>=0?'var(--green)':'var(--danger)'}">${money0(saldo)}</div></div>
-      <div class="kpi"><div class="l">Entradas del mes</div><div class="v num" style="color:var(--ok)">${money0(ingresos)}</div></div>
-      <div class="kpi"><div class="l">Salidas del mes</div><div class="v num" style="color:var(--danger)">${money0(egresos)}</div></div>
+      <div class="kpi"><div class="l">Saldo inicial</div><div class="v num" style="color:var(--muted)">${money0(d.saldoIni)}</div></div>
+      <div class="kpi"><div class="l">Saldo final</div><div class="v num" style="color:${d.saldoFinal>=0?'var(--green)':'var(--danger)'}">${money0(d.saldoFinal)}</div></div>
+      <div class="kpi"><div class="l">Entradas del mes</div><div class="v num" style="color:var(--ok)">${money0(d.ingresos)}</div></div>
+      <div class="kpi"><div class="l">Salidas del mes</div><div class="v num" style="color:var(--danger)">${money0(d.egresos)}</div></div>
     </div>
     <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin-bottom:6px">Movimientos de ${MESES[erM]}</div>
-    ${rows.length?`<div class="card">`+rows.map(m=>`<div class="prod" style="cursor:default">
+    ${d.rows.length?`<div class="card">`+d.rows.map(m=>`<div class="prod" style="cursor:default">
         <div class="nm"><b>${esc(m.concepto)}</b><span><span class="tagcat" style="color:${lblColor(m.label)}">${m.label}</span> · ${fmtDate(m.fecha)}</span></div>
         <div class="pr"><b style="color:${col(m.monto)}">${m.monto>=0?"+":"−"}${money(Math.abs(m.monto))}</b><span>saldo ${money0(m.saldo)}</span></div></div>`).join("")+`</div>`
       :`<div class="empty" style="padding:30px">Sin movimientos en ${MESES[erM]}.</div>`}
-    <p class="hint" style="margin-top:10px">Incluye fondo, cobros de notas pagadas, costo de la mercancía (al crear la nota), gastos y retiros. El <b>saldo</b> es el acumulado en caja.</p>`;
+    <button class="btn btn-o btn-block" id="lbPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
+    <p class="hint" style="margin-top:8px">Incluye fondo, cobros de notas pagadas, costo de la mercancía (al crear la nota), gastos y retiros. El <b>saldo</b> es el acumulado en caja.</p>`;
   bindMesNav(renderLibro);
+  $("lbPrint").onclick=printLibro;
+}
+
+// --- LIBRO MAYOR (por cuenta, mensual) ---
+function renderMayor(){
+  erInit();
+  const data=mayorData();
+  const grTotal=data.reduce((a,g)=>a+g.total,0);
+  const col=m=>m>=0?"var(--ok)":"var(--danger)";
+  $("panelBody").innerHTML=`${mesNav()}
+    ${data.length?data.map(g=>`
+      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:4px 0 6px">${esc(g.grupo)}</div>
+      ${g.cuentas.map(c=>`<div class="card pad" style="margin-bottom:10px">
+        <div class="totline" style="font-size:15px;margin-bottom:6px"><span><b>${esc(c.nombre)}</b></span><span class="num" style="font-weight:700;color:${col(c.total)}">${(c.total<0?"−":"")+money(Math.abs(c.total))}</span></div>
+        ${c.movs.map(m=>`<div class="totline" style="font-size:12.5px;padding:3px 0;border-bottom:1px solid var(--line-soft)"><span style="color:var(--muted)">${fmtDate(m.fecha)} · ${esc(m.concepto)}</span><span class="num" style="color:${col(m.monto)}">${m.monto>=0?"+":"−"}${money(Math.abs(m.monto))}</span></div>`).join("")}
+      </div>`).join("")}`).join("")
+      :`<div class="empty" style="padding:30px">Sin movimientos en ${MESES[erM]}.</div>`}
+    <button class="btn btn-o btn-block" id="myPrint" style="margin-top:4px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
+    <p class="hint" style="margin-top:8px">Cada cuenta agrupa sus movimientos del mes con su total. Las cuentas son tus categorías (Ventas, Costo de ventas, Renta, Sueldos…).</p>`;
+  bindMesNav(renderMayor);
+  $("myPrint").onclick=printMayor;
+}
+
+// --- IMPRESIÓN de reportes ---
+function repHeader(titulo){
+  return `<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #102a5c;padding-bottom:10px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px">${LOGO?`<img src="${LOGO}" style="width:42px;height:auto">`:""}<div><div style="font-family:Jost,sans-serif;font-weight:600;font-size:22px;color:#102a5c">${esc(comNombre())}</div><div style="font-size:11px;color:#8A9184;letter-spacing:.16em;font-weight:600">MARKEMI</div></div></div>
+    <div style="text-align:right"><div style="font-family:Jost,sans-serif;font-weight:600;font-size:16px;color:#102a5c">${esc(titulo)}</div><div style="font-size:13px;color:#5C665C">${erLabel()}</div></div>
+  </div>`;
+}
+function doPrint(html){
+  $("printArea").innerHTML=`<div style="font-family:Figtree,system-ui,sans-serif;color:#16211A;max-width:720px;margin:0 auto;padding:4px">${html}</div>`;
+  setTimeout(()=>{try{window.print();}catch(e){toast("Usa el menú del navegador para imprimir");}},80);
+}
+function printEstado(){
+  const d=estadoData();
+  const sg=v=>(v<0?"−":"")+money(Math.abs(v));
+  const line=(l,val,o={})=>`<tr style="${o.bd?'border-top:1px solid #d9d4c8;':''}"><td style="padding:6px 0;${o.sub?'padding-left:16px;color:#5C665C;':''}${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${l}</td><td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${o.signed?sg(val):(o.neg?"−":"")+money(Math.abs(val))}</td></tr>`;
+  const inner=`${repHeader("Estado de Resultados")}
+    <table style="width:100%;border-collapse:collapse">
+      ${line("Ingresos por ventas (cobradas)",d.ingresos)}
+      ${line("Costo de la mercancía vendida",d.costo,{neg:true})}
+      ${line("Utilidad bruta",d.bruto,{b:true,bd:true,signed:true})}
+      <tr><td colspan="2" style="padding:10px 0 2px;font-size:11.5px;color:#8A9184;text-transform:uppercase;letter-spacing:.05em;font-family:Jost,sans-serif">Gastos de operación</td></tr>
+      ${d.cats.length?d.cats.map(([c,m])=>line(c,m,{neg:true,sub:true})).join(""):`<tr><td colspan="2" style="padding:4px 0 4px 16px;color:#8A9184;font-size:13px">Sin gastos este mes</td></tr>`}
+      ${line("Total gastos",d.gastosTot,{neg:true,bd:true})}
+      ${line("Utilidad neta",d.neta,{b:true,big:true,bd:true,signed:true})}
+      <tr><td style="padding:4px 0;font-size:13px;color:#5C665C">Margen neto</td><td style="padding:4px 0;text-align:right;font-size:13px;color:#5C665C">${d.margen.toFixed(0)}%</td></tr>
+    </table>
+    ${d.porCobrarMes>0?`<p style="font-size:12.5px;color:#5C665C;margin-top:12px">Ventas de ${MESES[erM]} aún por cobrar: <b>${money(d.porCobrarMes)}</b> (entran como ingreso al marcarlas Pagado).</p>`:""}
+    <p style="font-size:11px;color:#8A9184;margin-top:14px">Ingresos contados al cobrar · ${d.nCobradas} venta(s) cobrada(s) en el mes. Documento interno de control.</p>`;
+  doPrint(inner);
+}
+function printLibro(){
+  const d=libroData();
+  const cell=(t,o={})=>`<td style="padding:7px 8px;border-bottom:1px solid #eee;font-size:12.5px;${o.r?'text-align:right;font-variant-numeric:tabular-nums;':''}${o.c?`color:${o.c};`:''}${o.b?'font-weight:600;':''}">${t}</td>`;
+  const rowsHtml=d.rows.map(m=>`<tr>${cell(fmtDate(m.fecha))}${cell(esc(m.concepto))}${cell(m.label)}${cell((m.monto>=0?"+":"−")+money(Math.abs(m.monto)),{r:true,c:m.monto>=0?"#2E7D46":"#B3402F",b:true})}${cell(money0(m.saldo),{r:true,c:"#5C665C"})}</tr>`).join("");
+  const inner=`${repHeader("Libro Diario")}
+    <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+      <tr><td style="padding:4px 8px;font-size:12px;color:#5C665C">Saldo inicial: <b>${money(d.saldoIni)}</b></td><td style="padding:4px 8px;font-size:12px;color:#5C665C;text-align:right">Entradas: <b style="color:#2E7D46">${money(d.ingresos)}</b> · Salidas: <b style="color:#B3402F">${money(d.egresos)}</b></td></tr>
+    </table>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#F4F0E7">
+        <th style="text-align:left;padding:7px 8px;font-size:11px;font-family:Jost,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#5C665C">Fecha</th>
+        <th style="text-align:left;padding:7px 8px;font-size:11px;font-family:Jost,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#5C665C">Concepto</th>
+        <th style="text-align:left;padding:7px 8px;font-size:11px;font-family:Jost,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#5C665C">Tipo</th>
+        <th style="text-align:right;padding:7px 8px;font-size:11px;font-family:Jost,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#5C665C">Monto</th>
+        <th style="text-align:right;padding:7px 8px;font-size:11px;font-family:Jost,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#5C665C">Saldo</th>
+      </tr></thead>
+      <tbody>${rowsHtml||`<tr><td colspan="5" style="padding:16px;text-align:center;color:#8A9184">Sin movimientos en el mes</td></tr>`}</tbody>
+    </table>
+    <table style="width:100%;border-collapse:collapse;margin-top:8px"><tr style="border-top:2px solid #102a5c"><td style="padding:8px;font-weight:700;font-size:14px">Saldo final del mes</td><td style="padding:8px;text-align:right;font-weight:700;font-size:16px;color:#102a5c">${money(d.saldoFinal)}</td></tr></table>
+    <p style="font-size:11px;color:#8A9184;margin-top:12px">Movimientos de caja: fondo, cobros, costo de mercancía, gastos y retiros. Documento interno de control.</p>`;
+  doPrint(inner);
+}
+function printMayor(){
+  const data=mayorData();
+  const sg=v=>(v<0?"−":"")+money(Math.abs(v));
+  const cuentaHtml=c=>`<table style="width:100%;border-collapse:collapse;margin-bottom:12px">
+      <tr style="border-bottom:1px solid #102a5c"><td style="padding:5px 0;font-weight:700;font-size:14px">${esc(c.nombre)}</td><td style="padding:5px 0;text-align:right;font-weight:700;font-size:14px;color:#102a5c">${sg(c.total)}</td></tr>
+      ${c.movs.map(m=>`<tr><td style="padding:4px 0 4px 14px;font-size:12px;color:#5C665C">${fmtDate(m.fecha)} · ${esc(m.concepto)}</td><td style="padding:4px 0;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:${m.monto>=0?'#2E7D46':'#B3402F'}">${m.monto>=0?"+":"−"}${money(Math.abs(m.monto))}</td></tr>`).join("")}
+    </table>`;
+  const inner=`${repHeader("Libro Mayor")}
+    ${data.length?data.map(g=>`<div style="font:600 11.5px Jost,sans-serif;text-transform:uppercase;letter-spacing:.05em;color:#8A9184;margin:10px 0 4px">${esc(g.grupo)}</div>${g.cuentas.map(cuentaHtml).join("")}`).join(""):`<p style="color:#8A9184">Sin movimientos en el mes.</p>`}
+    <p style="font-size:11px;color:#8A9184;margin-top:12px">Cuentas = categorías de la app. Documento interno de control (apoyo para tu contabilidad).</p>`;
+  doPrint(inner);
+}
+
+// ============ CONTABILIDAD FISCAL: partida doble + catálogo SAT + balanza ============
+// Modelo base flujo de efectivo (todo por transferencia = Bancos como contracuenta).
+// Los códigos agrupadores son EDITABLES; tu contador los confirma antes de enviar al SAT.
+function n2(v){return (Math.round((+v||0)*100)/100).toFixed(2);}
+function xmlEsc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");}
+function fiscKey(){return "markemi_fiscal_"+(typeof CID!=="undefined"&&CID?CID:"x");}
+let FCFG=null;
+function fiscCfg(){if(FCFG===null){try{FCFG=JSON.parse(localStorage.getItem(fiscKey()))||{};}catch(e){FCFG={};}}return FCFG;}
+function fiscCfgSave(){try{localStorage.setItem(fiscKey(),JSON.stringify(fiscCfg()));}catch(e){}}
+
+// Definición base del catálogo (mayor nivel 1 + subcuenta nivel 2). cod = código agrupador SAT.
+const CTA_DEF={
+  bancos :{mayorCod:"102",mayorDesc:"Bancos",            numCta:"102.01",cod:"102.01",desc:"Bancos",                 natur:"D"},
+  capital:{mayorCod:"301",mayorDesc:"Capital contable",  numCta:"301.01",cod:"301.01",desc:"Aportaciones de capital",natur:"A"},
+  retiros:{mayorCod:"301",mayorDesc:"Capital contable",  numCta:"301.02",cod:"301.02",desc:"Retiros del propietario",natur:"D"},
+  ventas :{mayorCod:"401",mayorDesc:"Ventas y/o servicios",numCta:"401.01",cod:"401.01",desc:"Ventas",               natur:"A"},
+  costo  :{mayorCod:"501",mayorDesc:"Costo de venta",     numCta:"501.01",cod:"501.01",desc:"Costo de venta",        natur:"D"},
+  gastos :{mayorCod:"601",mayorDesc:"Gastos generales",   numCta:"601.01",cod:"601.01",desc:"Gastos generales",      natur:"D"},
+  ivaTras:{mayorCod:"213",mayorDesc:"IVA trasladado",     numCta:"213.01",cod:"213.01",desc:"IVA trasladado cobrado",natur:"A"},
+  ivaAcr :{mayorCod:"118",mayorDesc:"IVA acreditable",    numCta:"118.01",cod:"118.01",desc:"IVA acreditable pagado",natur:"D"}
+};
+const CTA_LABEL={bancos:"Bancos",capital:"Aportaciones de capital",retiros:"Retiros del propietario",ventas:"Ventas",costo:"Costo de venta",gastos:"Gastos generales",ivaTras:"IVA trasladado",ivaAcr:"IVA acreditable"};
+function cta(key){const o=Object.assign({},CTA_DEF[key]);const c=fiscCfg();if(c.cod&&c.cod[key])o.cod=c.cod[key];if(c.num&&c.num[key])o.numCta=c.num[key];return o;}
+function ctaKeys(){const b=["bancos","capital","retiros","ventas","costo","gastos"];if(fiscCfg().iva)b.push("ivaTras","ivaAcr");return b;}
+
+// Genera los asientos (partida doble) a partir de los movimientos reales.
+function postings(){
+  const iva=!!fiscCfg().iva, R=0.16, P=[];
+  const add=(fecha,key,debe,haber)=>{if(!fecha)return;if((+debe||0)===0&&(+haber||0)===0)return;P.push({fecha,key,debe:+debe||0,haber:+haber||0});};
+  (STATE.caja||[]).forEach(c=>{const m=+c.monto||0;if(c.tipo==="fondo"){add(c.fecha,"bancos",m,0);add(c.fecha,"capital",0,m);}else{add(c.fecha,"retiros",m,0);add(c.fecha,"bancos",0,m);}});
+  (STATE.ventas||[]).filter(v=>!v.borrador).forEach(v=>{
+    const C=+v.costo||0;
+    if(C>0){ if(iva){const base=C/(1+R);add(v.fecha,"costo",base,0);add(v.fecha,"ivaAcr",C-base,0);} else add(v.fecha,"costo",C,0); add(v.fecha,"bancos",0,C); }
+    if(v.pago==="pagado"){ const V=+v.venta||0; add(v.fecha,"bancos",V,0); if(iva){const base=V/(1+R);add(v.fecha,"ventas",0,base);add(v.fecha,"ivaTras",0,V-base);} else add(v.fecha,"ventas",0,V); }
+  });
+  (STATE.gastos||[]).forEach(g=>{const G=+g.monto||0;if(G===0)return;if(iva){const base=G/(1+R);add(g.fecha,"gastos",base,0);add(g.fecha,"ivaAcr",G-base,0);}else add(g.fecha,"gastos",G,0);add(g.fecha,"bancos",0,G);});
+  return P;
+}
+function balanzaData(){
+  const ms=monthStartISO(), P=postings();
+  const rows=ctaKeys().map(k=>{
+    const c=cta(k);
+    const ini=P.filter(p=>p.key===k&&p.fecha<ms), mes=P.filter(p=>p.key===k&&inMonth(p.fecha));
+    const dIni=ini.reduce((a,p)=>a+p.debe,0),hIni=ini.reduce((a,p)=>a+p.haber,0);
+    const dMes=mes.reduce((a,p)=>a+p.debe,0),hMes=mes.reduce((a,p)=>a+p.haber,0);
+    const saldoIni=c.natur==="D"?(dIni-hIni):(hIni-dIni);
+    const saldoFin=c.natur==="D"?(saldoIni+dMes-hMes):(saldoIni+hMes-dMes);
+    return {key:k,cta:c,saldoIni,debe:dMes,haber:hMes,saldoFin};
+  }).filter(r=>Math.abs(r.saldoIni)>=0.005||Math.abs(r.debe)>=0.005||Math.abs(r.haber)>=0.005);
+  const totDebe=rows.reduce((a,r)=>a+r.debe,0), totHaber=rows.reduce((a,r)=>a+r.haber,0);
+  const sumD=rows.filter(r=>r.cta.natur==="D").reduce((a,r)=>a+r.saldoFin,0);
+  const sumA=rows.filter(r=>r.cta.natur==="A").reduce((a,r)=>a+r.saldoFin,0);
+  const util=(rows.find(r=>r.key==="ventas")||{saldoFin:0}).saldoFin-(rows.find(r=>r.key==="costo")||{saldoFin:0}).saldoFin-(rows.find(r=>r.key==="gastos")||{saldoFin:0}).saldoFin;
+  return {rows,totDebe,totHaber,sumD,sumA,util,cuadra:Math.abs(totDebe-totHaber)<0.5&&Math.abs(sumD-sumA)<0.5};
+}
+
+// --- XML Anexo 24 v1.3 ---
+function xmlCatalogo(){
+  const c=fiscCfg(), rfc=((c.rfc||"").toUpperCase().trim())||"XAXX010101000";
+  const mes=String(erM+1).padStart(2,"0"), anio=String(erY);
+  const mayores={};
+  ctaKeys().forEach(k=>{const kd=CTA_DEF[k];if(!mayores[kd.mayorCod])mayores[kd.mayorCod]={cod:kd.mayorCod,desc:kd.mayorDesc,natur:cta(k).natur};});
+  let body="";
+  Object.values(mayores).forEach(m=>{body+=`  <catalogocuentas:Ctas CodAgrup="${m.cod}" NumCta="${m.cod}" Desc="${xmlEsc(m.desc)}" Nivel="1" Natur="${m.natur}"/>\n`;});
+  ctaKeys().forEach(k=>{const o=cta(k),kd=CTA_DEF[k];body+=`  <catalogocuentas:Ctas CodAgrup="${xmlEsc(o.cod)}" NumCta="${xmlEsc(o.numCta)}" Desc="${xmlEsc(o.desc)}" SubCtaDe="${kd.mayorCod}" Nivel="2" Natur="${o.natur}"/>\n`;});
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<catalogocuentas:Catalogo xmlns:catalogocuentas="http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/CatalogoCuentas" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/CatalogoCuentas http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/CatalogoCuentas/CatalogoCuentas_1_3.xsd" Version="1.3" RFC="${xmlEsc(rfc)}" Mes="${mes}" Anio="${anio}">\n${body}</catalogocuentas:Catalogo>`;
+}
+function xmlBalanza(){
+  const c=fiscCfg(), rfc=((c.rfc||"").toUpperCase().trim())||"XAXX010101000";
+  const mes=String(erM+1).padStart(2,"0"), anio=String(erY), d=balanzaData();
+  let body="";
+  d.rows.forEach(r=>{body+=`  <BCE:Ctas NumCta="${xmlEsc(r.cta.numCta)}" SaldoIni="${n2(r.saldoIni)}" Debe="${n2(r.debe)}" Haber="${n2(r.haber)}" SaldoFin="${n2(r.saldoFin)}"/>\n`;});
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<BCE:Balanza xmlns:BCE="http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/BalanzaComprobacion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/BalanzaComprobacion http://www.sat.gob.mx/esquemas/ContabilidadE/1_3/BalanzaComprobacion/BalanzaComprobacion_1_3.xsd" Version="1.3" RFC="${xmlEsc(rfc)}" Mes="${mes}" Anio="${anio}" TipoEnvio="N">\n${body}</BCE:Balanza>`;
+}
+function dlXML(name,content){try{const b=new Blob([content],{type:"application/xml;charset=utf-8"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(u);a.remove();},120);toast("XML descargado");}catch(e){toast("No se pudo descargar");}}
+function fiscFile(tipo){const c=fiscCfg();const rfc=((c.rfc||"").toUpperCase().trim())||"XAXX010101000";return rfc+erY+String(erM+1).padStart(2,"0")+tipo+".xml";}
+
+// --- CATÁLOGO DE CUENTAS (editable) ---
+function renderCatSat(){
+  erInit();const c=fiscCfg();
+  const rowsHtml=ctaKeys().map(k=>{const o=cta(k);return `<tr style="border-bottom:1px solid var(--line-soft)">
+      <td style="padding:7px 4px;font-size:13px">${esc(CTA_LABEL[k])}<div style="font-size:11px;color:var(--faint)">${esc(o.desc)}</div></td>
+      <td style="padding:7px 4px"><input class="inp cta-num" data-k="${k}" value="${esc(o.numCta)}" style="width:80px;padding:6px 7px;font-size:13px"></td>
+      <td style="padding:7px 4px"><input class="inp cta-cod" data-k="${k}" value="${esc(o.cod)}" style="width:80px;padding:6px 7px;font-size:13px"></td>
+      <td style="padding:7px 4px;text-align:center;font-size:13px;color:var(--muted)">${o.natur}</td></tr>`;}).join("");
+  $("panelBody").innerHTML=`
+    <div class="card pad" style="margin-bottom:11px">
+      <label class="f">RFC del contribuyente</label>
+      <input class="inp" id="fRfc" value="${esc(c.rfc||"")}" placeholder="XAXX010101000" style="text-transform:uppercase">
+      <label class="row" style="align-items:center;gap:8px;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="fIva" ${c.iva?"checked":""} style="width:18px;height:18px">
+        <span style="font-size:13.5px">Mis ventas y compras ya incluyen IVA 16% (separar IVA trasladado/acreditable)</span>
+      </label>
+      <p class="hint" style="margin-top:6px">Déjalo <b>apagado</b> si tus productos son tasa 0% (frutas y verduras) o si el IVA lo llevas solo en tus CFDIs.</p>
+    </div>
+    <div class="card pad">
+      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin-bottom:8px">Catálogo de cuentas</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="text-align:left;color:var(--faint);font-size:11px;font-family:Jost">
+          <th style="padding:4px">Cuenta</th><th style="padding:4px">Núm. cta</th><th style="padding:4px">Cód. agrup. SAT</th><th style="padding:4px;text-align:center">Nat.</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <p class="hint" style="margin-top:10px">⚠️ Los <b>códigos agrupadores</b> son editables. Confírmalos con tu contador antes de enviarlos al SAT (p. ej. Ventas 401 tasa general vs 402 tasa 0%).</p>
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px">
+      <button class="btn btn-p" id="fGuardar" style="flex:1">Guardar</button>
+      <button class="btn btn-o" id="fXmlCat" style="flex:1">Exportar XML</button>
+    </div>
+    <button class="btn btn-o btn-block" id="fImpCat" style="margin-top:8px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>`;
+  $("fGuardar").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();c.iva=$("fIva").checked;c.cod=c.cod||{};c.num=c.num||{};
+    document.querySelectorAll(".cta-cod").forEach(i=>{c.cod[i.dataset.k]=i.value.trim();});
+    document.querySelectorAll(".cta-num").forEach(i=>{c.num[i.dataset.k]=i.value.trim();});
+    fiscCfgSave();toast("Guardado");renderCatSat();};
+  $("fXmlCat").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();c.iva=$("fIva").checked;fiscCfgSave();if(!c.rfc){toast("Escribe el RFC primero");return;}dlXML(fiscFile("CT"),xmlCatalogo());};
+  $("fImpCat").onclick=printCatalogo;
+}
+
+// --- BALANZA DE COMPROBACIÓN ---
+function renderBalanza(){
+  erInit();const c=fiscCfg();const d=balanzaData();
+  const money2=v=>money(Math.abs(v));
+  const rowH=r=>`<tr style="border-bottom:1px solid var(--line-soft)">
+      <td style="padding:6px 4px;font-size:12.5px"><b>${esc(r.cta.numCta)}</b> ${esc(r.cta.desc)}</td>
+      <td style="padding:6px 4px;text-align:right;font-size:12.5px;color:var(--muted)">${money2(r.saldoIni)}</td>
+      <td style="padding:6px 4px;text-align:right;font-size:12.5px;color:var(--ok)">${money2(r.debe)}</td>
+      <td style="padding:6px 4px;text-align:right;font-size:12.5px;color:var(--danger)">${money2(r.haber)}</td>
+      <td style="padding:6px 4px;text-align:right;font-size:12.5px;font-weight:600">${money2(r.saldoFin)}</td></tr>`;
+  const noRfc=!(c.rfc&&c.rfc.trim());
+  $("panelBody").innerHTML=`${mesNav()}
+    ${noRfc?`<div class="card pad" style="margin-bottom:11px;border:1px solid var(--warn)"><p class="hint" style="margin:0">Agrega tu <b>RFC</b> en la pestaña <b>Catálogo SAT</b> para exportar el XML.</p></div>`:""}
+    <div class="card pad" style="margin-bottom:11px;display:flex;justify-content:space-between;align-items:center">
+      <div><div style="font-size:12px;color:var(--faint)">Cuadre (cargos = abonos)</div>
+        <div style="font-size:15px;font-weight:700;color:${d.cuadra?'var(--green)':'var(--danger)'}">${d.cuadra?'✓ Cuadra':'⚠ No cuadra'}</div></div>
+      <div style="text-align:right"><div style="font-size:12px;color:var(--faint)">Resultado del periodo</div>
+        <div style="font-size:15px;font-weight:700;color:${d.util>=0?'var(--green)':'var(--danger)'}">${(d.util<0?"−":"")+money(Math.abs(d.util))}</div></div>
+    </div>
+    ${d.rows.length?`<div class="card pad"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:right;color:var(--faint);font-size:10.5px;font-family:Jost;text-transform:uppercase">
+        <th style="text-align:left;padding:4px">Cuenta</th><th style="padding:4px">S. inicial</th><th style="padding:4px">Debe</th><th style="padding:4px">Haber</th><th style="padding:4px">S. final</th></tr></thead>
+      <tbody>${d.rows.map(rowH).join("")}</tbody>
+      <tfoot><tr style="border-top:2px solid var(--line)">
+        <td style="padding:7px 4px;font-weight:700;font-size:12.5px">Totales</td><td></td>
+        <td style="padding:7px 4px;text-align:right;font-weight:700;font-size:12.5px;color:var(--ok)">${money(d.totDebe)}</td>
+        <td style="padding:7px 4px;text-align:right;font-weight:700;font-size:12.5px;color:var(--danger)">${money(d.totHaber)}</td><td></td></tr></tfoot>
+    </table></div>`:`<div class="empty" style="padding:30px">Sin movimientos en ${MESES[erM]}.</div>`}
+    <div class="row" style="gap:8px;margin-top:12px">
+      <button class="btn btn-p" id="bXml" style="flex:1" ${noRfc?"disabled":""}>Exportar XML</button>
+      <button class="btn btn-o" id="bImp" style="flex:1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;vertical-align:-2px"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg> Imprimir</button>
+    </div>
+    <p class="hint" style="margin-top:8px">Balanza base <b>flujo de efectivo</b> (todo por transferencia). Apoyo para tu contador; concíliala con tus CFDIs. El XML es Anexo 24 v1.3 (balanza Normal).</p>`;
+  bindMesNav(renderBalanza);
+  if(!noRfc)$("bXml").onclick=()=>dlXML(fiscFile("BN"),xmlBalanza());
+  $("bImp").onclick=printBalanza;
+}
+
+// --- IMPRESIÓN fiscal ---
+function printBalanza(){
+  const d=balanzaData(),m2=v=>money(Math.abs(v));
+  const rows=d.rows.map(r=>`<tr><td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:12px"><b>${esc(r.cta.numCta)}</b> ${esc(r.cta.desc)}</td>
+     <td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${m2(r.saldoIni)}</td>
+     <td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${m2(r.debe)}</td>
+     <td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${m2(r.haber)}</td>
+     <td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;font-weight:600">${m2(r.saldoFin)}</td></tr>`).join("");
+  const inner=`${repHeader("Balanza de Comprobación")}
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#F4F0E7"><th style="text-align:left;padding:6px;font-size:11px;font-family:Jost,sans-serif">Cuenta</th><th style="text-align:right;padding:6px;font-size:11px;font-family:Jost,sans-serif">Saldo inicial</th><th style="text-align:right;padding:6px;font-size:11px;font-family:Jost,sans-serif">Debe</th><th style="text-align:right;padding:6px;font-size:11px;font-family:Jost,sans-serif">Haber</th><th style="text-align:right;padding:6px;font-size:11px;font-family:Jost,sans-serif">Saldo final</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="5" style="padding:14px;text-align:center;color:#8A9184">Sin movimientos</td></tr>`}</tbody>
+      <tfoot><tr style="border-top:2px solid #102a5c"><td style="padding:7px 6px;font-weight:700;font-size:13px">Totales</td><td></td><td style="padding:7px 6px;text-align:right;font-weight:700;font-size:13px">${money(d.totDebe)}</td><td style="padding:7px 6px;text-align:right;font-weight:700;font-size:13px">${money(d.totHaber)}</td><td></td></tr></tfoot>
+    </table>
+    <p style="font-size:12px;color:#5C665C;margin-top:10px">Cuadre (cargos = abonos): <b style="color:${d.cuadra?'#2E7D46':'#B3402F'}">${d.cuadra?'Cuadra':'Revisar'}</b> · Resultado del periodo: <b>${(d.util<0?"−":"")+money(Math.abs(d.util))}</b></p>
+    <p style="font-size:11px;color:#8A9184;margin-top:6px">Base flujo de efectivo. Documento de apoyo; a conciliar con CFDIs y la contabilidad formal.</p>`;
+  doPrint(inner);
+}
+function printCatalogo(){
+  const rows=ctaKeys().map(k=>{const o=cta(k);return `<tr><td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:12px"><b>${esc(o.numCta)}</b></td><td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:12px">${esc(o.desc)}</td><td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:12px">${esc(o.cod)}</td><td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:12px;text-align:center">${o.natur}</td></tr>`;}).join("");
+  const inner=`${repHeader("Catálogo de Cuentas")}
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#F4F0E7"><th style="text-align:left;padding:6px;font-size:11px;font-family:Jost,sans-serif">Núm. cuenta</th><th style="text-align:left;padding:6px;font-size:11px;font-family:Jost,sans-serif">Descripción</th><th style="text-align:left;padding:6px;font-size:11px;font-family:Jost,sans-serif">Cód. agrupador</th><th style="text-align:center;padding:6px;font-size:11px;font-family:Jost,sans-serif">Nat.</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p style="font-size:11px;color:#8A9184;margin-top:10px">Códigos agrupadores a confirmar con tu contador. Anexo 24 v1.3.</p>`;
+  doPrint(inner);
+}
+
+// ============ LECTOR DE CFDIs (XML 4.0) + IVA ============
+function fiscRFC(){return ((fiscCfg().rfc||"").toUpperCase().trim());}
+// Parsea un XML de CFDI 4.0 (o 3.3) y devuelve los datos fiscales, o null si no es válido.
+function parseCFDI(txt){
+  try{
+    const doc=new DOMParser().parseFromString(txt,"application/xml");
+    if(doc.getElementsByTagName("parsererror").length)return null;
+    const C=doc.getElementsByTagNameNS("*","Comprobante")[0];
+    if(!C)return null;
+    const ga=(el,a)=>(el&&el.getAttribute(a))||"";
+    const emisor=doc.getElementsByTagNameNS("*","Emisor")[0];
+    const receptor=doc.getElementsByTagNameNS("*","Receptor")[0];
+    const tfd=doc.getElementsByTagNameNS("*","TimbreFiscalDigital")[0];
+    const uuid=((tfd&&(tfd.getAttribute("UUID")||tfd.getAttribute("uuid")))||"").toUpperCase();
+    if(!uuid)return null;
+    // Impuestos a nivel Comprobante (hijo directo), no por concepto
+    let compImp=null; for(const n of C.children){if(n.localName==="Impuestos"){compImp=n;break;}}
+    const sumTras=(blk)=>{let s=0;if(!blk)return 0;const tr=blk.getElementsByTagNameNS("*","Traslado");for(const t of tr){if(t.getAttribute("Impuesto")==="002")s+=parseFloat(t.getAttribute("Importe")||"0")||0;}return s;};
+    const sumRet=(blk,imp)=>{let s=0;if(!blk)return 0;const r=blk.getElementsByTagNameNS("*","Retencion");for(const t of r){if(t.getAttribute("Impuesto")===imp)s+=parseFloat(t.getAttribute("Importe")||"0")||0;}return s;};
+    const fechaRaw=ga(C,"Fecha");
+    return {
+      uuid, tipo_comp:ga(C,"TipoDeComprobante"),
+      fecha:(fechaRaw||"").slice(0,10),
+      rfc_emisor:ga(emisor,"Rfc").toUpperCase(), nombre_emisor:ga(emisor,"Nombre"),
+      rfc_receptor:ga(receptor,"Rfc").toUpperCase(), nombre_receptor:ga(receptor,"Nombre"),
+      subtotal:parseFloat(ga(C,"SubTotal")||"0")||0,
+      descuento:parseFloat(ga(C,"Descuento")||"0")||0,
+      iva:sumTras(compImp), ret_iva:sumRet(compImp,"002"), ret_isr:sumRet(compImp,"001"),
+      total:parseFloat(ga(C,"Total")||"0")||0,
+      metodo_pago:ga(C,"MetodoPago"), forma_pago:ga(C,"FormaPago"),
+      uso_cfdi:receptor?ga(receptor,"UsoCFDI"):"", moneda:ga(C,"Moneda")||"MXN",
+      xml:txt
+    };
+  }catch(e){return null;}
+}
+async function onCFDIFiles(fileList){
+  const rfc=fiscRFC();
+  if(!rfc){toast("Primero escribe tu RFC en Catálogo SAT");return;}
+  const files=[...fileList].filter(f=>/\.xml$/i.test(f.name)||/xml/i.test(f.type));
+  const pdfs=[...fileList].filter(f=>/\.pdf$/i.test(f.name));
+  if(!files.length){toast(pdfs.length?"Sube el XML (el PDF es solo respaldo visual)":"No se encontró XML");return;}
+  let ok=0,dup=0,bad=0,otro=0;
+  const rows=[];
+  for(const f of files){
+    let txt; try{txt=await f.text();}catch(e){bad++;continue;}
+    const d=parseCFDI(txt); if(!d){bad++;continue;}
+    let tipo; if(d.rfc_emisor===rfc)tipo="emitido"; else if(d.rfc_receptor===rfc)tipo="recibido"; else {otro++;continue;}
+    rows.push({comercio_id:CID,uuid:d.uuid,tipo,tipo_comp:d.tipo_comp,fecha:d.fecha,rfc_emisor:d.rfc_emisor,nombre_emisor:d.nombre_emisor,rfc_receptor:d.rfc_receptor,nombre_receptor:d.nombre_receptor,subtotal:d.subtotal,descuento:d.descuento,iva:d.iva,ret_iva:d.ret_iva,ret_isr:d.ret_isr,total:d.total,metodo_pago:d.metodo_pago,forma_pago:d.forma_pago,uso_cfdi:d.uso_cfdi,moneda:d.moneda,xml:d.xml});
+  }
+  if(rows.length){
+    const {error}=await sb.from("cfdis").upsert(rows,{onConflict:"comercio_id,uuid",ignoreDuplicates:false}).select();
+    if(error){ if(/relation|does not exist|cfdis/i.test(error.message))toast("Falta crear la tabla 'cfdis' (corre el SQL)"); else toast("Error: "+error.message); return; }
+    ok=rows.length;
+    const xc=await sb.from("cfdis").select("*").eq("comercio_id",CID).order("fecha",{ascending:false});
+    STATE.cfdis=(xc&&xc.data)||[];
+  }
+  const msg=[ok?ok+" CFDI(s) cargados":"",bad?bad+" inválidos":"",otro?otro+" de otro RFC":""].filter(Boolean).join(" · ");
+  toast(msg||"Sin cambios");
+  renderCFDI();
+}
+function cfdiMes(){return (STATE.cfdis||[]).filter(c=>inMonth(c.fecha));}
+function cfdiResumen(){
+  const ms=cfdiMes();
+  const sign=c=>c.tipo_comp==="E"?-1:1;
+  const emit=ms.filter(c=>c.tipo==="emitido"), reci=ms.filter(c=>c.tipo==="recibido");
+  const ivaTras=emit.reduce((a,c)=>a+sign(c)*(+c.iva||0),0);
+  const ivaAcr=reci.reduce((a,c)=>a+sign(c)*(+c.iva||0),0);
+  const ingresos=emit.reduce((a,c)=>a+sign(c)*(+c.subtotal||0),0);
+  const gastos=reci.reduce((a,c)=>a+sign(c)*(+c.subtotal||0),0);
+  const retIsr=emit.reduce((a,c)=>a+sign(c)*(+c.ret_isr||0),0);
+  return {emit,reci,ivaTras,ivaAcr,ivaNeto:ivaTras-ivaAcr,ingresos,gastos,retIsr,n:ms.length};
+}
+function renderCFDI(){
+  erInit();const rfc=fiscRFC();const r=cfdiResumen();
+  const money2=v=>(v<0?"−":"")+money(Math.abs(v));
+  const tipoPill=c=>c.tipo==="emitido"?`<span class="tagcat" style="color:var(--ok)">Emitida</span>`:`<span class="tagcat" style="color:var(--warn)">Recibida</span>`;
+  const lista=cfdiMes().slice().sort((a,b)=>a.fecha<b.fecha?1:-1).map(c=>`<div class="prod" data-del="${esc(c.id)}" style="cursor:default">
+      <div class="nm"><b>${esc((c.tipo==="emitido"?c.nombre_receptor:c.nombre_emisor)||"—")}</b><span>${tipoPill(c)} · ${fmtDate(c.fecha)} · ${esc(c.metodo_pago||"")} · IVA ${money(+c.iva||0)}</span></div>
+      <div class="pr"><b>${money(+c.total||0)}</b><span style="font-size:10px">${esc(String(c.uuid||"").slice(0,8))}…</span></div></div>`).join("");
+  $("panelBody").innerHTML=`${mesNav()}
+    ${!rfc?`<div class="card pad" style="margin-bottom:11px;border:1px solid var(--warn)"><p class="hint" style="margin:0">Escribe tu <b>RFC</b> en <b>Catálogo SAT</b> para poder clasificar tus facturas (emitidas vs recibidas).</p></div>`:""}
+    <div class="kpis" style="margin-bottom:11px">
+      <div class="kpi"><div class="l">IVA trasladado</div><div class="v num" style="color:var(--ok)">${money0(r.ivaTras)}</div><div class="s">de ${r.emit.length} emitida(s)</div></div>
+      <div class="kpi"><div class="l">IVA acreditable</div><div class="v num" style="color:var(--warn)">${money0(r.ivaAcr)}</div><div class="s">de ${r.reci.length} recibida(s)</div></div>
+      <div class="kpi"><div class="l">IVA del mes</div><div class="v num" style="color:${r.ivaNeto>=0?'var(--danger)':'var(--green)'}">${money2(r.ivaNeto)}</div><div class="s">${r.ivaNeto>=0?'a cargo':'a favor'}</div></div>
+      <div class="kpi"><div class="l">Ingresos (base)</div><div class="v num">${money0(r.ingresos)}</div><div class="s">subtotal emitidas</div></div>
+      <div class="kpi"><div class="l">Gastos (base)</div><div class="v num" style="color:var(--muted)">${money0(r.gastos)}</div><div class="s">subtotal recibidas</div></div>
+      <div class="kpi"><div class="l">Ret. ISR</div><div class="v num" style="color:var(--muted)">${money0(r.retIsr)}</div><div class="s">te retuvieron</div></div>
+    </div>
+    <input type="file" id="cfdiFile" accept=".xml,text/xml,application/xml" multiple style="display:none">
+    <button class="btn btn-p btn-block" id="cfdiBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:17px;height:17px;vertical-align:-3px"><path d="M12 3v12M7 8l5-5 5 5M5 21h14"/></svg> Subir XML de facturas</button>
+    <p class="hint" style="margin:8px 0 4px">Sube los XML de tus CFDIs (emitidos y recibidos). Se detecta solo cuáles son tuyos por tu RFC y no se duplican. El PDF es solo respaldo visual.</p>
+    <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:12px 0 6px">Facturas de ${MESES[erM]} (${r.n})</div>
+    ${lista?`<div class="card">${lista}</div>`:`<div class="empty" style="padding:26px">Sin CFDIs en ${MESES[erM]}. Sube tus XML para empezar.</div>`}
+    <p class="hint" style="margin-top:8px">El IVA se calcula al emitirse la factura (PUE). El <b>IVA del mes</b> = trasladado (cobrado) − acreditable (pagado).</p>`;
+  bindMesNav(renderCFDI);
+  $("cfdiBtn").onclick=()=>$("cfdiFile").click();
+  $("cfdiFile").onchange=e=>{onCFDIFiles(e.target.files);e.target.value="";};
+  document.querySelectorAll("#panelBody .prod[data-del]").forEach(el=>{el.ondblclick=async()=>{
+    const id=el.dataset.del;const {error}=await sb.from("cfdis").delete().eq("id",id);
+    if(error){toast("Error al borrar");return;}STATE.cfdis=(STATE.cfdis||[]).filter(x=>String(x.id)!==String(id));toast("CFDI eliminado");renderCFDI();};});
 }
 
 // ============ helpers ============
