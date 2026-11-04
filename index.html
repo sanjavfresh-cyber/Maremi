@@ -976,37 +976,37 @@ function renderResumen(){
   }
 }
 
-// --- DATOS de los reportes (se usan para mostrar y para imprimir) ---
+// --- DATOS de los reportes FISCALES: se calculan desde los CFDIs (facturas) ---
 function estadoData(){
-  const noB=STATE.ventas.filter(v=>!v.borrador);
-  const cobradas=noB.filter(v=>v.pago==="pagado"&&inMonth(v.fecha));
-  const ingresos=cobradas.reduce((a,v)=>a+ +v.venta,0);
-  const costo=cobradas.reduce((a,v)=>a+ +v.costo,0);
-  const bruto=ingresos-costo;
-  const gm=STATE.gastos.filter(g=>inMonth(g.fecha));
-  const gastosTot=gm.reduce((a,g)=>a+ +g.monto,0);
-  const porCat={};gm.forEach(g=>{const c=g.categoria||"Otro";porCat[c]=(porCat[c]||0)+ +g.monto;});
-  const cats=Object.entries(porCat).sort((a,b)=>b[1]-a[1]);
-  const neta=bruto-gastosTot;
-  const margen=ingresos>0?neta/ingresos*100:0;
-  const porCobrarMes=noB.filter(v=>v.pago!=="pagado"&&inMonth(v.fecha)).reduce((a,v)=>a+ +v.venta,0);
-  return {ingresos,costo,bruto,cats,gastosTot,neta,margen,porCobrarMes,nCobradas:cobradas.length};
+  const emit=(STATE.cfdis||[]).filter(c=>c.tipo==="emitido"&&inMonth(c.fecha));
+  const recib=(STATE.cfdis||[]).filter(c=>c.tipo==="recibido"&&inMonth(c.fecha));
+  const sg=c=>c.tipo_comp==="E"?-1:1;
+  const ingresos=emit.reduce((a,c)=>a+sg(c)*(+c.subtotal||0),0);
+  const ivaTras=emit.reduce((a,c)=>a+sg(c)*(+c.iva||0),0);
+  const deducciones=recib.reduce((a,c)=>a+sg(c)*(+c.subtotal||0),0);
+  const ivaAcr=recib.reduce((a,c)=>a+sg(c)*(+c.iva||0),0);
+  const porProv={};recib.forEach(c=>{const n=c.nombre_emisor||"Proveedor";porProv[n]=(porProv[n]||0)+sg(c)*(+c.subtotal||0);});
+  const provs=Object.entries(porProv).sort((a,b)=>b[1]-a[1]);
+  const utilidad=ingresos-deducciones;
+  const margen=ingresos>0?utilidad/ingresos*100:0;
+  const retIsr=emit.reduce((a,c)=>a+sg(c)*(+c.ret_isr||0),0);
+  return {ingresos,ivaTras,deducciones,ivaAcr,provs,utilidad,margen,ivaNeto:ivaTras-ivaAcr,retIsr,nEmit:emit.length,nRecib:recib.length};
 }
 function libroMovs(){
-  const noB=STATE.ventas.filter(v=>!v.borrador);
-  let mov=[];
-  STATE.caja.forEach(c=>mov.push({fecha:c.fecha,label:c.tipo==="fondo"?"Fondo":"Retiro",grupo:"Caja y capital",cuenta:c.tipo==="fondo"?"Aportaciones de fondo":"Retiros",concepto:c.concepto||(c.tipo==="fondo"?"Aporte de fondo":"Retiro de caja"),monto:c.tipo==="fondo"?+c.monto:-(+c.monto)}));
-  noB.forEach(v=>{
-    if(+v.costo>0)mov.push({fecha:v.fecha,label:"Compra",grupo:"Costo",cuenta:"Costo de ventas",concepto:"Mercancía — "+(v.cliente||("nota "+(v.folio||""))),monto:-(+v.costo)});
-    if(v.pago==="pagado")mov.push({fecha:v.fecha,label:"Cobro",grupo:"Ingresos",cuenta:"Ventas",concepto:(v.cliente||("nota "+(v.folio||""))),monto:+v.venta});
+  const sg=c=>c.tipo_comp==="E"?-1:1;
+  return (STATE.cfdis||[]).map(c=>{
+    const emit=c.tipo==="emitido", u=String(c.uuid||"").slice(0,8);
+    return {fecha:c.fecha, label:emit?"Factura":"Compra/Gasto",
+      grupo:emit?"Ingresos (ventas facturadas)":"Deducciones (compras/gastos)",
+      cuenta:emit?"Ventas":(c.nombre_emisor||"Proveedor"),
+      concepto:((emit?(c.nombre_receptor||"Cliente"):(c.nombre_emisor||"Proveedor"))||"")+" · "+u,
+      monto:sg(c)*(emit?(+c.total||0):-(+c.total||0))};
   });
-  STATE.gastos.forEach(g=>mov.push({fecha:g.fecha,label:"Gasto",grupo:"Gastos",cuenta:g.categoria||"Otro",concepto:g.concepto||(g.categoria||"Gasto"),monto:-(+g.monto)}));
-  return mov;
 }
 function mayorData(){
   const ms=monthStartISO();
   const monthMov=libroMovs().filter(m=>inMonth(m.fecha)).sort((a,b)=>a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0);
-  const ordenGrupo=["Ingresos","Costo","Gastos","Caja y capital"];
+  const ordenGrupo=["Ingresos (ventas facturadas)","Deducciones (compras/gastos)"];
   const grupos={};
   monthMov.forEach(m=>{
     const g=m.grupo||"Otros"; (grupos[g]||(grupos[g]={}));
@@ -1041,18 +1041,21 @@ function renderEstado(){
   const row=(lbl,val,o={})=>`<div class="totline" style="font-size:${o.big?16:14}px;${o.bd?'border-top:1px solid var(--line);padding-top:8px;margin-top:6px;':''}${o.sub?'padding-left:12px;color:var(--muted);':''}"><span>${o.b?`<b>${lbl}</b>`:lbl}</span><span class="num" style="${o.col?`color:${o.col};`:''}${o.b?'font-weight:700':''}">${o.signed?sg(val):(o.neg?"−":"")+money(Math.abs(val))}</span></div>`;
   $("panelBody").innerHTML=`${mesNav()}
     <div class="card pad col">
-      ${row("Ingresos por ventas (cobradas)",d.ingresos,{col:"var(--ok)"})}
-      ${row("Costo de la mercancía vendida",d.costo,{neg:true,col:"var(--danger)"})}
-      ${row("Utilidad bruta",d.bruto,{b:true,bd:true,signed:true,col:d.bruto>=0?'var(--green)':'var(--danger)'})}
-      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:8px 0 2px">Gastos de operación</div>
-      ${d.cats.length?d.cats.map(([c,m])=>row(c,m,{neg:true,sub:true})).join(""):`<div style="color:var(--faint);padding:4px 0 4px 12px;font-size:13px">Sin gastos este mes</div>`}
-      ${row("Total gastos",d.gastosTot,{neg:true,col:"var(--danger)"})}
-      <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${d.neta>=0?'var(--green)':'var(--danger)'}"><span>Utilidad neta</span><span class="num">${(d.neta<0?"−":"")+money(Math.abs(d.neta))}</span></div>
-      <div class="totline" style="font-size:13px;color:var(--muted)"><span>Margen neto</span><span class="num">${d.margen.toFixed(0)}%</span></div>
+      ${row("Ingresos facturados (ventas)",d.ingresos,{b:true,col:"var(--ok)"})}
+      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:8px 0 2px">Deducciones (compras y gastos facturados)</div>
+      ${d.provs.length?d.provs.slice(0,10).map(([n,m])=>row(n,m,{neg:true,sub:true})).join(""):`<div style="color:var(--faint);padding:4px 0 4px 12px;font-size:13px">Sin compras/gastos facturados este mes</div>`}
+      ${row("Total deducciones",d.deducciones,{neg:true,col:"var(--danger)"})}
+      <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${d.utilidad>=0?'var(--green)':'var(--danger)'}"><span>Utilidad fiscal</span><span class="num">${(d.utilidad<0?"−":"")+money(Math.abs(d.utilidad))}</span></div>
+      <div class="totline" style="font-size:13px;color:var(--muted)"><span>Margen</span><span class="num">${d.margen.toFixed(0)}%</span></div>
     </div>
-    ${d.porCobrarMes>0?`<div class="card pad" style="margin-top:11px"><div class="totline" style="font-size:13px"><span>Ventas de ${MESES[erM]} aún por cobrar</span><span class="num" style="color:var(--warn)">${money0(d.porCobrarMes)}</span></div><p class="hint" style="margin:4px 0 0">Entran como ingreso cuando las marques como <b>Pagado</b>.</p></div>`:""}
+    <div class="card pad col" style="margin-top:11px">
+      <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin-bottom:2px">IVA del mes</div>
+      ${row("IVA trasladado (cobrado)",d.ivaTras,{col:"var(--ok)"})}
+      ${row("IVA acreditable (pagado)",d.ivaAcr,{neg:true,col:"var(--warn)"})}
+      <div class="totline" style="border-top:1px solid var(--line);padding-top:8px;margin-top:6px;color:${d.ivaNeto>=0?'var(--danger)':'var(--green)'}"><span><b>IVA ${d.ivaNeto>=0?'a cargo':'a favor'}</b></span><span class="num" style="font-weight:700">${(d.ivaNeto<0?"−":"")+money(Math.abs(d.ivaNeto))}</span></div>
+    </div>
     <button class="btn btn-o btn-block" id="erPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
-    <p class="hint" style="margin-top:8px">El ingreso cuenta <b>al cobrar</b> (notas pagadas). El costo es el de esas mismas ventas cobradas. ${d.nCobradas} venta(s) cobrada(s) este mes.</p>`;
+    <p class="hint" style="margin-top:8px">Calculado desde tus <b>CFDIs</b> (facturas): ${d.nEmit} emitida(s), ${d.nRecib} recibida(s). Es tu utilidad <b>fiscal</b> — lo que va al SAT. Tus notas son tu control interno aparte.</p>`;
   bindMesNav(renderEstado);
   $("erPrint").onclick=printEstado;
 }
@@ -1062,7 +1065,7 @@ function renderLibro(){
   erInit();
   const d=libroData();
   const col=m=>m>=0?"var(--ok)":"var(--danger)";
-  const lblColor=l=>l==="Cobro"||l==="Fondo"?"var(--ok)":l==="Gasto"?"var(--danger)":l==="Compra"?"var(--warn)":"var(--muted)";
+  const lblColor=l=>l==="Factura"?"var(--ok)":"var(--danger)";
   $("panelBody").innerHTML=`${mesNav()}
     <div class="kpis" style="margin-bottom:11px">
       <div class="kpi"><div class="l">Saldo inicial</div><div class="v num" style="color:var(--muted)">${money0(d.saldoIni)}</div></div>
@@ -1076,7 +1079,7 @@ function renderLibro(){
         <div class="pr"><b style="color:${col(m.monto)}">${m.monto>=0?"+":"−"}${money(Math.abs(m.monto))}</b><span>saldo ${money0(m.saldo)}</span></div></div>`).join("")+`</div>`
       :`<div class="empty" style="padding:30px">Sin movimientos en ${MESES[erM]}.</div>`}
     <button class="btn btn-o btn-block" id="lbPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
-    <p class="hint" style="margin-top:8px">Incluye fondo, cobros de notas pagadas, costo de la mercancía (al crear la nota), gastos y retiros. El <b>saldo</b> es el acumulado en caja.</p>`;
+    <p class="hint" style="margin-top:8px">Movimientos desde tus <b>CFDIs</b>: facturas emitidas (+) y compras/gastos facturados (−). El <b>saldo</b> es el flujo fiscal acumulado.</p>`;
   bindMesNav(renderLibro);
   $("lbPrint").onclick=printLibro;
 }
@@ -1096,7 +1099,7 @@ function renderMayor(){
       </div>`).join("")}`).join("")
       :`<div class="empty" style="padding:30px">Sin movimientos en ${MESES[erM]}.</div>`}
     <button class="btn btn-o btn-block" id="myPrint" style="margin-top:4px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
-    <p class="hint" style="margin-top:8px">Cada cuenta agrupa sus movimientos del mes con su total. Las cuentas son tus categorías (Ventas, Costo de ventas, Renta, Sueldos…).</p>`;
+    <p class="hint" style="margin-top:8px">Cada cuenta agrupa tus <b>facturas</b> del mes: Ventas (emitidas) y cada proveedor (compras/gastos). Desde tus CFDIs.</p>`;
   bindMesNav(renderMayor);
   $("myPrint").onclick=printMayor;
 }
@@ -1118,17 +1121,20 @@ function printEstado(){
   const line=(l,val,o={})=>`<tr style="${o.bd?'border-top:1px solid #d9d4c8;':''}"><td style="padding:6px 0;${o.sub?'padding-left:16px;color:#5C665C;':''}${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${l}</td><td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${o.signed?sg(val):(o.neg?"−":"")+money(Math.abs(val))}</td></tr>`;
   const inner=`${repHeader("Estado de Resultados")}
     <table style="width:100%;border-collapse:collapse">
-      ${line("Ingresos por ventas (cobradas)",d.ingresos)}
-      ${line("Costo de la mercancía vendida",d.costo,{neg:true})}
-      ${line("Utilidad bruta",d.bruto,{b:true,bd:true,signed:true})}
-      <tr><td colspan="2" style="padding:10px 0 2px;font-size:11.5px;color:#8A9184;text-transform:uppercase;letter-spacing:.05em;font-family:Jost,sans-serif">Gastos de operación</td></tr>
-      ${d.cats.length?d.cats.map(([c,m])=>line(c,m,{neg:true,sub:true})).join(""):`<tr><td colspan="2" style="padding:4px 0 4px 16px;color:#8A9184;font-size:13px">Sin gastos este mes</td></tr>`}
-      ${line("Total gastos",d.gastosTot,{neg:true,bd:true})}
-      ${line("Utilidad neta",d.neta,{b:true,big:true,bd:true,signed:true})}
-      <tr><td style="padding:4px 0;font-size:13px;color:#5C665C">Margen neto</td><td style="padding:4px 0;text-align:right;font-size:13px;color:#5C665C">${d.margen.toFixed(0)}%</td></tr>
+      ${line("Ingresos facturados (ventas)",d.ingresos,{b:true})}
+      <tr><td colspan="2" style="padding:10px 0 2px;font-size:11.5px;color:#8A9184;text-transform:uppercase;letter-spacing:.05em;font-family:Jost,sans-serif">Deducciones (compras y gastos facturados)</td></tr>
+      ${d.provs.length?d.provs.slice(0,12).map(([c,m])=>line(c,m,{neg:true,sub:true})).join(""):`<tr><td colspan="2" style="padding:4px 0 4px 16px;color:#8A9184;font-size:13px">Sin compras/gastos facturados este mes</td></tr>`}
+      ${line("Total deducciones",d.deducciones,{neg:true,bd:true})}
+      ${line("Utilidad fiscal",d.utilidad,{b:true,big:true,bd:true,signed:true})}
+      <tr><td style="padding:4px 0;font-size:13px;color:#5C665C">Margen</td><td style="padding:4px 0;text-align:right;font-size:13px;color:#5C665C">${d.margen.toFixed(0)}%</td></tr>
     </table>
-    ${d.porCobrarMes>0?`<p style="font-size:12.5px;color:#5C665C;margin-top:12px">Ventas de ${MESES[erM]} aún por cobrar: <b>${money(d.porCobrarMes)}</b> (entran como ingreso al marcarlas Pagado).</p>`:""}
-    <p style="font-size:11px;color:#8A9184;margin-top:14px">Ingresos contados al cobrar · ${d.nCobradas} venta(s) cobrada(s) en el mes. Documento interno de control.</p>`;
+    <table style="width:100%;border-collapse:collapse;margin-top:12px">
+      <tr><td colspan="2" style="padding:2px 0;font-size:11.5px;color:#8A9184;text-transform:uppercase;letter-spacing:.05em;font-family:Jost,sans-serif">IVA del mes</td></tr>
+      ${line("IVA trasladado (cobrado)",d.ivaTras)}
+      ${line("IVA acreditable (pagado)",d.ivaAcr,{neg:true})}
+      ${line("IVA "+(d.ivaNeto>=0?'a cargo':'a favor'),d.ivaNeto,{b:true,bd:true,signed:true})}
+    </table>
+    <p style="font-size:11px;color:#8A9184;margin-top:14px">Calculado desde tus CFDIs (facturas): ${d.nEmit} emitida(s), ${d.nRecib} recibida(s). Utilidad fiscal — para el SAT.</p>`;
   doPrint(inner);
 }
 function printLibro(){
@@ -1150,7 +1156,7 @@ function printLibro(){
       <tbody>${rowsHtml||`<tr><td colspan="5" style="padding:16px;text-align:center;color:#8A9184">Sin movimientos en el mes</td></tr>`}</tbody>
     </table>
     <table style="width:100%;border-collapse:collapse;margin-top:8px"><tr style="border-top:2px solid #102a5c"><td style="padding:8px;font-weight:700;font-size:14px">Saldo final del mes</td><td style="padding:8px;text-align:right;font-weight:700;font-size:16px;color:#102a5c">${money(d.saldoFinal)}</td></tr></table>
-    <p style="font-size:11px;color:#8A9184;margin-top:12px">Movimientos de caja: fondo, cobros, costo de mercancía, gastos y retiros. Documento interno de control.</p>`;
+    <p style="font-size:11px;color:#8A9184;margin-top:12px">Movimientos desde CFDIs: facturas emitidas (+) y compras/gastos facturados (−). Flujo fiscal del mes.</p>`;
   doPrint(inner);
 }
 function printMayor(){
@@ -1162,7 +1168,7 @@ function printMayor(){
     </table>`;
   const inner=`${repHeader("Libro Mayor")}
     ${data.length?data.map(g=>`<div style="font:600 11.5px Jost,sans-serif;text-transform:uppercase;letter-spacing:.05em;color:#8A9184;margin:10px 0 4px">${esc(g.grupo)}</div>${g.cuentas.map(cuentaHtml).join("")}`).join(""):`<p style="color:#8A9184">Sin movimientos en el mes.</p>`}
-    <p style="font-size:11px;color:#8A9184;margin-top:12px">Cuentas = categorías de la app. Documento interno de control (apoyo para tu contabilidad).</p>`;
+    <p style="font-size:11px;color:#8A9184;margin-top:12px">Cuentas: Ventas (facturas emitidas) y cada proveedor (compras/gastos). Desde tus CFDIs.</p>`;
   doPrint(inner);
 }
 
@@ -1178,30 +1184,26 @@ function fiscCfgSave(){try{localStorage.setItem(fiscKey(),JSON.stringify(fiscCfg
 
 // Definición base del catálogo (mayor nivel 1 + subcuenta nivel 2). cod = código agrupador SAT.
 const CTA_DEF={
-  bancos :{mayorCod:"102",mayorDesc:"Bancos",            numCta:"102.01",cod:"102.01",desc:"Bancos",                 natur:"D"},
-  capital:{mayorCod:"301",mayorDesc:"Capital contable",  numCta:"301.01",cod:"301.01",desc:"Aportaciones de capital",natur:"A"},
-  retiros:{mayorCod:"301",mayorDesc:"Capital contable",  numCta:"301.02",cod:"301.02",desc:"Retiros del propietario",natur:"D"},
-  ventas :{mayorCod:"401",mayorDesc:"Ventas y/o servicios",numCta:"401.01",cod:"401.01",desc:"Ventas",               natur:"A"},
-  costo  :{mayorCod:"501",mayorDesc:"Costo de venta",     numCta:"501.01",cod:"501.01",desc:"Costo de venta",        natur:"D"},
-  gastos :{mayorCod:"601",mayorDesc:"Gastos generales",   numCta:"601.01",cod:"601.01",desc:"Gastos generales",      natur:"D"},
-  ivaTras:{mayorCod:"213",mayorDesc:"IVA trasladado",     numCta:"213.01",cod:"213.01",desc:"IVA trasladado cobrado",natur:"A"},
-  ivaAcr :{mayorCod:"118",mayorDesc:"IVA acreditable",    numCta:"118.01",cod:"118.01",desc:"IVA acreditable pagado",natur:"D"}
+  bancos :{mayorCod:"102",mayorDesc:"Bancos",             numCta:"102.01",cod:"102.01",desc:"Bancos",                 natur:"D"},
+  ventas :{mayorCod:"401",mayorDesc:"Ventas y/o servicios",numCta:"401.01",cod:"401.01",desc:"Ventas facturadas",      natur:"A"},
+  compras:{mayorCod:"601",mayorDesc:"Gastos generales",   numCta:"601.01",cod:"601.01",desc:"Compras y gastos",        natur:"D"},
+  ivaTras:{mayorCod:"213",mayorDesc:"IVA trasladado",     numCta:"213.01",cod:"213.01",desc:"IVA trasladado cobrado",  natur:"A"},
+  ivaAcr :{mayorCod:"118",mayorDesc:"IVA acreditable",    numCta:"118.01",cod:"118.01",desc:"IVA acreditable pagado",  natur:"D"}
 };
-const CTA_LABEL={bancos:"Bancos",capital:"Aportaciones de capital",retiros:"Retiros del propietario",ventas:"Ventas",costo:"Costo de venta",gastos:"Gastos generales",ivaTras:"IVA trasladado",ivaAcr:"IVA acreditable"};
+const CTA_LABEL={bancos:"Bancos",ventas:"Ventas facturadas",compras:"Compras y gastos",ivaTras:"IVA trasladado",ivaAcr:"IVA acreditable"};
 function cta(key){const o=Object.assign({},CTA_DEF[key]);const c=fiscCfg();if(c.cod&&c.cod[key])o.cod=c.cod[key];if(c.num&&c.num[key])o.numCta=c.num[key];return o;}
-function ctaKeys(){const b=["bancos","capital","retiros","ventas","costo","gastos"];if(fiscCfg().iva)b.push("ivaTras","ivaAcr");return b;}
+function ctaKeys(){return ["bancos","ventas","compras","ivaTras","ivaAcr"];}
 
-// Genera los asientos (partida doble) a partir de los movimientos reales.
+// Genera los asientos (partida doble) desde los CFDIs. PUE = se cobra/paga al emitirse.
 function postings(){
-  const iva=!!fiscCfg().iva, R=0.16, P=[];
+  const P=[];
   const add=(fecha,key,debe,haber)=>{if(!fecha)return;if((+debe||0)===0&&(+haber||0)===0)return;P.push({fecha,key,debe:+debe||0,haber:+haber||0});};
-  (STATE.caja||[]).forEach(c=>{const m=+c.monto||0;if(c.tipo==="fondo"){add(c.fecha,"bancos",m,0);add(c.fecha,"capital",0,m);}else{add(c.fecha,"retiros",m,0);add(c.fecha,"bancos",0,m);}});
-  (STATE.ventas||[]).filter(v=>!v.borrador).forEach(v=>{
-    const C=+v.costo||0;
-    if(C>0){ if(iva){const base=C/(1+R);add(v.fecha,"costo",base,0);add(v.fecha,"ivaAcr",C-base,0);} else add(v.fecha,"costo",C,0); add(v.fecha,"bancos",0,C); }
-    if(v.pago==="pagado"){ const V=+v.venta||0; add(v.fecha,"bancos",V,0); if(iva){const base=V/(1+R);add(v.fecha,"ventas",0,base);add(v.fecha,"ivaTras",0,V-base);} else add(v.fecha,"ventas",0,V); }
+  (STATE.cfdis||[]).forEach(c=>{
+    const s=c.tipo_comp==="E"?-1:1;
+    const sub=s*(+c.subtotal||0), iva=s*(+c.iva||0), tot=s*(+c.total||0);
+    if(c.tipo==="emitido"){ add(c.fecha,"bancos",tot,0); add(c.fecha,"ventas",0,sub); if(iva)add(c.fecha,"ivaTras",0,iva); }
+    else { add(c.fecha,"compras",sub,0); if(iva)add(c.fecha,"ivaAcr",iva,0); add(c.fecha,"bancos",0,tot); }
   });
-  (STATE.gastos||[]).forEach(g=>{const G=+g.monto||0;if(G===0)return;if(iva){const base=G/(1+R);add(g.fecha,"gastos",base,0);add(g.fecha,"ivaAcr",G-base,0);}else add(g.fecha,"gastos",G,0);add(g.fecha,"bancos",0,G);});
   return P;
 }
 function balanzaData(){
@@ -1218,7 +1220,7 @@ function balanzaData(){
   const totDebe=rows.reduce((a,r)=>a+r.debe,0), totHaber=rows.reduce((a,r)=>a+r.haber,0);
   const sumD=rows.filter(r=>r.cta.natur==="D").reduce((a,r)=>a+r.saldoFin,0);
   const sumA=rows.filter(r=>r.cta.natur==="A").reduce((a,r)=>a+r.saldoFin,0);
-  const util=(rows.find(r=>r.key==="ventas")||{saldoFin:0}).saldoFin-(rows.find(r=>r.key==="costo")||{saldoFin:0}).saldoFin-(rows.find(r=>r.key==="gastos")||{saldoFin:0}).saldoFin;
+  const util=(rows.find(r=>r.key==="ventas")||{haber:0}).haber-(rows.find(r=>r.key==="compras")||{debe:0}).debe;
   return {rows,totDebe,totHaber,sumD,sumA,util,cuadra:Math.abs(totDebe-totHaber)<0.5&&Math.abs(sumD-sumA)<0.5};
 }
 
@@ -1255,11 +1257,7 @@ function renderCatSat(){
     <div class="card pad" style="margin-bottom:11px">
       <label class="f">RFC del contribuyente</label>
       <input class="inp" id="fRfc" value="${esc(c.rfc||"")}" placeholder="XAXX010101000" style="text-transform:uppercase">
-      <label class="row" style="align-items:center;gap:8px;margin-top:10px;cursor:pointer">
-        <input type="checkbox" id="fIva" ${c.iva?"checked":""} style="width:18px;height:18px">
-        <span style="font-size:13.5px">Mis ventas y compras ya incluyen IVA 16% (separar IVA trasladado/acreditable)</span>
-      </label>
-      <p class="hint" style="margin-top:6px">Déjalo <b>apagado</b> si tus productos son tasa 0% (frutas y verduras) o si el IVA lo llevas solo en tus CFDIs.</p>
+      <p class="hint" style="margin-top:6px">Tu RFC se usa para clasificar tus facturas (emitidas vs recibidas) y para el XML. El IVA se toma directo de los CFDIs.</p>
     </div>
     <div class="card pad">
       <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin-bottom:8px">Catálogo de cuentas</div>
@@ -1275,11 +1273,11 @@ function renderCatSat(){
       <button class="btn btn-o" id="fXmlCat" style="flex:1">Exportar XML</button>
     </div>
     <button class="btn btn-o btn-block" id="fImpCat" style="margin-top:8px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>`;
-  $("fGuardar").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();c.iva=$("fIva").checked;c.cod=c.cod||{};c.num=c.num||{};
+  $("fGuardar").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();c.cod=c.cod||{};c.num=c.num||{};
     document.querySelectorAll(".cta-cod").forEach(i=>{c.cod[i.dataset.k]=i.value.trim();});
     document.querySelectorAll(".cta-num").forEach(i=>{c.num[i.dataset.k]=i.value.trim();});
     fiscCfgSave();toast("Guardado");renderCatSat();};
-  $("fXmlCat").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();c.iva=$("fIva").checked;fiscCfgSave();if(!c.rfc){toast("Escribe el RFC primero");return;}dlXML(fiscFile("CT"),xmlCatalogo());};
+  $("fXmlCat").onclick=()=>{const c=fiscCfg();c.rfc=($("fRfc").value||"").toUpperCase().trim();fiscCfgSave();if(!c.rfc){toast("Escribe el RFC primero");return;}dlXML(fiscFile("CT"),xmlCatalogo());};
   $("fImpCat").onclick=printCatalogo;
 }
 
@@ -1315,7 +1313,7 @@ function renderBalanza(){
       <button class="btn btn-p" id="bXml" style="flex:1" ${noRfc?"disabled":""}>Exportar XML</button>
       <button class="btn btn-o" id="bImp" style="flex:1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;vertical-align:-2px"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg> Imprimir</button>
     </div>
-    <p class="hint" style="margin-top:8px">Balanza base <b>flujo de efectivo</b> (todo por transferencia). Apoyo para tu contador; concíliala con tus CFDIs. El XML es Anexo 24 v1.3 (balanza Normal).</p>`;
+    <p class="hint" style="margin-top:8px">Balanza calculada desde tus <b>CFDIs</b> (facturas). El XML es Anexo 24 v1.3 (balanza Normal). Confírmala con tu contador.</p>`;
   bindMesNav(renderBalanza);
   if(!noRfc)$("bXml").onclick=()=>dlXML(fiscFile("BN"),xmlBalanza());
   $("bImp").onclick=printBalanza;
@@ -1336,7 +1334,7 @@ function printBalanza(){
       <tfoot><tr style="border-top:2px solid #102a5c"><td style="padding:7px 6px;font-weight:700;font-size:13px">Totales</td><td></td><td style="padding:7px 6px;text-align:right;font-weight:700;font-size:13px">${money(d.totDebe)}</td><td style="padding:7px 6px;text-align:right;font-weight:700;font-size:13px">${money(d.totHaber)}</td><td></td></tr></tfoot>
     </table>
     <p style="font-size:12px;color:#5C665C;margin-top:10px">Cuadre (cargos = abonos): <b style="color:${d.cuadra?'#2E7D46':'#B3402F'}">${d.cuadra?'Cuadra':'Revisar'}</b> · Resultado del periodo: <b>${(d.util<0?"−":"")+money(Math.abs(d.util))}</b></p>
-    <p style="font-size:11px;color:#8A9184;margin-top:6px">Base flujo de efectivo. Documento de apoyo; a conciliar con CFDIs y la contabilidad formal.</p>`;
+    <p style="font-size:11px;color:#8A9184;margin-top:6px">Calculada desde tus CFDIs (facturas). Documento de apoyo; confírmala con tu contador.</p>`;
   doPrint(inner);
 }
 function printCatalogo(){
