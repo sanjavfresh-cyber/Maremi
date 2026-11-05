@@ -1478,21 +1478,25 @@ function cfdiAcum(tipo,iniYM,finYM,field){
 }
 // Serie mes a mes desde el inicio del régimen hasta el mes seleccionado
 function isrSerie(){
-  const ini=isrInicio(), iniYM=ymStr(ini.y,ini.m);
-  const out=[]; let pagosAcum=0, y=ini.y, m=ini.m, k=0;
-  while(k<240){
-    k++; const curYM=ymStr(y,m);
-    const ing=cfdiAcum("emitido",iniYM,curYM,"subtotal");
-    const ded=cfdiAcum("recibido",iniYM,curYM,"subtotal");
+  // El ISR provisional se acumula por EJERCICIO (año calendario) y la tarifa se "eleva"
+  // al número de MES DEL EJERCICIO (enero=1 … noviembre=11 … diciembre=12), no a los
+  // meses desde el alta al régimen. El 1er año arranca en el mes de alta (excluye RESICO).
+  const ini=isrInicio();
+  const year=erY;
+  const startM=(ini.y===year)?ini.m:0;
+  const fromYM=ymStr(year,startM);
+  const out=[]; let pagosAcum=0;
+  for(let m=startM;m<=erM;m++){
+    const nMeses=m+1;                 // mes del ejercicio → tarifa acumulada ×nMeses
+    const curYM=ymStr(year,m);
+    const ing=cfdiAcum("emitido",fromYM,curYM,"subtotal");
+    const ded=cfdiAcum("recibido",fromYM,curYM,"subtotal");
     const base=Math.max(0,ing-ded);
-    const causado=isrTarifa(base,k);
-    const ret=cfdiAcum("emitido",iniYM,curYM,"ret_isr");
+    const causado=isrTarifa(base,nMeses);
+    const ret=cfdiAcum("emitido",fromYM,curYM,"ret_isr");
     const pago=Math.max(0,causado-ret-pagosAcum);
-    out.push({y,m,k,ing,ded,base,causado,ret,pagosPrev:pagosAcum,pago});
+    out.push({y:year,m,k:nMeses,ing,ded,base,causado,ret,pagosPrev:pagosAcum,pago});
     pagosAcum+=pago;
-    if(y===erY&&m===erM)break;
-    m++; if(m>11){m=0;y++;}
-    if(y>erY||(y===erY&&m>erM))break;
   }
   return out;
 }
@@ -1521,7 +1525,7 @@ function renderISR(){
   const d=r.d;
   $("panelBody").innerHTML=header+`
     <div class="kpis" style="margin-bottom:11px">
-      <div class="kpi"><div class="l">ISR del mes a pagar</div><div class="v num" style="color:${d.pago>0?'var(--danger)':'var(--green)'}">${money0(d.pago)}</div><div class="s">${MESES[erM]} ${erY} · mes ${d.k} del régimen</div></div>
+      <div class="kpi"><div class="l">ISR del mes a pagar</div><div class="v num" style="color:${d.pago>0?'var(--danger)':'var(--green)'}">${money0(d.pago)}</div><div class="s">${MESES[erM]} ${erY} · tarifa acumulada ×${d.k}</div></div>
       <div class="kpi"><div class="l">Utilidad gravable acum.</div><div class="v num">${money0(d.base)}</div><div class="s">${MESES[r.ini.m].slice(0,3)}→${MESES[erM].slice(0,3)} ${erY}</div></div>
     </div>
     <div class="card pad col">
@@ -1534,7 +1538,7 @@ function renderISR(){
       <div class="totline big" style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px;color:${d.pago>0?'var(--danger)':'var(--green)'}"><span>ISR provisional del mes</span><span class="num">${money(d.pago)}</span></div>
     </div>
     <button class="btn btn-o btn-block" id="isrPrint" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>Imprimir / PDF</button>
-    <p class="hint" style="margin-top:8px"><b>Estimado</b> con la tarifa mensual 2026 (art. 96), acumulado desde ${MESES[r.ini.m]} ${r.ini.y}. No incluye PTU ni pérdidas de años anteriores. Tu contador confirma la declaración oficial.</p>`;
+    <p class="hint" style="margin-top:8px"><b>Estimado</b> con la tarifa <b>acumulada al mes ${d.k}</b> del ejercicio (art. 96, 2026). Acumula desde ${MESES[r.ini.m]} ${r.ini.y} y se reinicia cada enero. No incluye PTU ni pérdidas de años anteriores. Tu contador confirma la declaración oficial.</p>`;
   bindMesNav(renderISR);
   $("isrIni").onchange=e=>{if(e.target.value){c.inicio=e.target.value;fiscCfgSave();renderISR();}};
   $("isrPrint").onclick=printISR;
@@ -1543,7 +1547,7 @@ function printISR(){
   const r=isrData();if(r.fuera)return;const d=r.d;
   const line=(l,val,o={})=>`<tr style="${o.bd?'border-top:1px solid #d9d4c8;':''}"><td style="padding:6px 0;${o.sub?'padding-left:16px;color:#5C665C;':''}${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${l}</td><td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${o.b?'font-weight:700;':''}font-size:${o.big?16:14}px">${(o.neg?"−":"")+money(Math.abs(val))}</td></tr>`;
   const inner=`${repHeader("ISR Provisional")}
-    <p style="font-size:12.5px;color:#5C665C;margin:0 0 10px">Pago provisional acumulado — mes ${d.k} del régimen (${MESES[erM]} ${erY}). Desde ${MESES[r.ini.m]} ${r.ini.y}.</p>
+    <p style="font-size:12.5px;color:#5C665C;margin:0 0 10px">Pago provisional — ${MESES[erM]} ${erY}, tarifa acumulada al mes ${d.k} del ejercicio. Acumula desde ${MESES[r.ini.m]} ${r.ini.y}.</p>
     <table style="width:100%;border-collapse:collapse">
       ${line("Ingresos acumulados (facturados)",d.ing)}
       ${line("Deducciones acumuladas",d.ded,{neg:true})}
