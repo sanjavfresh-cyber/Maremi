@@ -1444,9 +1444,11 @@ function renderCFDI(){
   erInit();const rfc=fiscRFC();const r=cfdiResumen();
   const money2=v=>(v<0?"−":"")+money(Math.abs(v));
   const tipoPill=c=>c.tipo==="emitido"?`<span class="tagcat" style="color:var(--ok)">Emitida</span>`:`<span class="tagcat" style="color:var(--warn)">Recibida</span>`;
-  const lista=cfdiMes().slice().sort((a,b)=>a.fecha<b.fecha?1:-1).map(c=>`<div class="prod" data-del="${esc(c.id)}" style="cursor:default">
-      <div class="nm"><b>${esc((c.tipo==="emitido"?c.nombre_receptor:c.nombre_emisor)||"—")}</b><span>${tipoPill(c)} · ${fmtDate(c.fecha)} · ${esc(c.metodo_pago||"")} · IVA ${money(+c.iva||0)}</span></div>
-      <div class="pr"><b>${money(+c.total||0)}</b><span style="font-size:10px">${esc(String(c.uuid||"").slice(0,8))}…</span></div></div>`).join("");
+  const ajuste=c=>Math.round(((+c.subtotal||0)+(+c.iva||0)-(+c.total||0))*100)/100;
+  const conAj=cfdiMes().filter(c=>Math.abs(ajuste(c))>=0.01);
+  const lista=cfdiMes().slice().sort((a,b)=>a.fecha<b.fecha?1:-1).map(c=>{const aj=ajuste(c);return `<div class="prod" data-del="${esc(c.id)}" style="cursor:default${Math.abs(aj)>=0.01?';border-left:3px solid var(--warn)':''}">
+      <div class="nm"><b>${esc((c.tipo==="emitido"?c.nombre_receptor:c.nombre_emisor)||"—")}</b><span>${tipoPill(c)} · ${fmtDate(c.fecha)} · ${esc(c.metodo_pago||"")} · IVA ${money(+c.iva||0)}${Math.abs(aj)>=0.01?` · <b style="color:var(--warn)">ret/desc ${money(Math.abs(aj))}</b>`:""}</span></div>
+      <div class="pr"><b>${money(+c.total||0)}</b><span style="font-size:10px">${esc(String(c.uuid||"").slice(0,8))}…</span></div></div>`;}).join("");
   $("panelBody").innerHTML=`${mesNav()}
     ${!rfc?`<div class="card pad" style="margin-bottom:11px;border:1px solid var(--warn)"><p class="hint" style="margin:0">Escribe tu <b>RFC</b> en <b>Catálogo SAT</b> para poder clasificar tus facturas (emitidas vs recibidas).</p></div>`:""}
     <div class="kpis" style="margin-bottom:11px">
@@ -1462,6 +1464,7 @@ function renderCFDI(){
     <p class="hint" style="margin:8px 0 4px">Sube los XML de tus CFDIs (emitidos y recibidos). Se detecta solo cuáles son tuyos por tu RFC y no se duplican. El PDF es solo respaldo visual.</p>
     <div class="l" style="font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;font-family:Jost;margin:12px 0 6px">Facturas de ${MESES[erM]} (${r.n})</div>
     ${lista?`<div class="card">${lista}</div>`:`<div class="empty" style="padding:26px">Sin CFDIs en ${MESES[erM]}. Sube tus XML para empezar.</div>`}
+    ${conAj.length?`<p class="hint" style="margin-top:8px;color:var(--warn)"><b>${conAj.length} factura(s)</b> con retención o descuento (marcadas con borde amarillo): su total no es subtotal + IVA. Es normal; van a la cuenta "Retenciones y ajustes".</p>`:""}
     <p class="hint" style="margin-top:8px">El IVA se calcula al emitirse la factura (PUE). El <b>IVA del mes</b> = trasladado (cobrado) − acreditable (pagado).</p>`;
   bindMesNav(renderCFDI);
   $("cfdiBtn").onclick=()=>$("cfdiFile").click();
