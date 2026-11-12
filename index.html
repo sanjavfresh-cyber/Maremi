@@ -1190,21 +1190,30 @@ const CTA_DEF={
   ventas :{mayorCod:"401",mayorDesc:"Ventas y/o servicios",numCta:"401.01",cod:"401.01",desc:"Ventas facturadas",      natur:"A"},
   compras:{mayorCod:"601",mayorDesc:"Gastos generales",   numCta:"601.01",cod:"601.01",desc:"Compras y gastos",        natur:"D"},
   ivaTras:{mayorCod:"213",mayorDesc:"IVA trasladado",     numCta:"213.01",cod:"213.01",desc:"IVA trasladado cobrado",  natur:"A"},
-  ivaAcr :{mayorCod:"118",mayorDesc:"IVA acreditable",    numCta:"118.01",cod:"118.01",desc:"IVA acreditable pagado",  natur:"D"}
+  ivaAcr :{mayorCod:"118",mayorDesc:"IVA acreditable",    numCta:"118.01",cod:"118.01",desc:"IVA acreditable pagado",  natur:"D"},
+  ajustes:{mayorCod:"216",mayorDesc:"Impuestos retenidos y ajustes",numCta:"216.01",cod:"216.01",desc:"Retenciones y ajustes",natur:"D"}
 };
-const CTA_LABEL={bancos:"Bancos",ventas:"Ventas facturadas",compras:"Compras y gastos",ivaTras:"IVA trasladado",ivaAcr:"IVA acreditable"};
+const CTA_LABEL={bancos:"Bancos",ventas:"Ventas facturadas",compras:"Compras y gastos",ivaTras:"IVA trasladado",ivaAcr:"IVA acreditable",ajustes:"Retenciones y ajustes"};
 function cta(key){const o=Object.assign({},CTA_DEF[key]);const c=fiscCfg();if(c.cod&&c.cod[key])o.cod=c.cod[key];if(c.num&&c.num[key])o.numCta=c.num[key];return o;}
-function ctaKeys(){return ["bancos","ventas","compras","ivaTras","ivaAcr"];}
+function ctaKeys(){return ["bancos","ventas","compras","ivaTras","ivaAcr","ajustes"];}
 
 // Genera los asientos (partida doble) desde los CFDIs. PUE = se cobra/paga al emitirse.
+// Cada asiento se cuadra solo: si el total ≠ subtotal+IVA (retenciones, descuentos, IEPS),
+// la diferencia va a la cuenta "ajustes" para que la balanza siempre cuadre.
 function postings(){
   const P=[];
-  const add=(fecha,key,debe,haber)=>{if(!fecha)return;if((+debe||0)===0&&(+haber||0)===0)return;P.push({fecha,key,debe:+debe||0,haber:+haber||0});};
+  const emit=(fecha,legs)=>{
+    let d=0,h=0; legs.forEach(l=>{d+=l[1]||0;h+=l[2]||0;});
+    const diff=Math.round((d-h)*100)/100;
+    if(Math.abs(diff)>=0.005){ if(diff>0)legs.push(["ajustes",0,diff]); else legs.push(["ajustes",-diff,0]); }
+    legs.forEach(l=>{ if((l[1]||0)!==0||(l[2]||0)!==0)P.push({fecha,key:l[0],debe:l[1]||0,haber:l[2]||0}); });
+  };
   (STATE.cfdis||[]).forEach(c=>{
+    if(!c.fecha)return;
     const s=c.tipo_comp==="E"?-1:1;
     const sub=s*(+c.subtotal||0), iva=s*(+c.iva||0), tot=s*(+c.total||0);
-    if(c.tipo==="emitido"){ add(c.fecha,"bancos",tot,0); add(c.fecha,"ventas",0,sub); if(iva)add(c.fecha,"ivaTras",0,iva); }
-    else { add(c.fecha,"compras",sub,0); if(iva)add(c.fecha,"ivaAcr",iva,0); add(c.fecha,"bancos",0,tot); }
+    if(c.tipo==="emitido") emit(c.fecha,[["bancos",tot,0],["ventas",0,sub],["ivaTras",0,iva]]);
+    else emit(c.fecha,[["compras",sub,0],["ivaAcr",iva,0],["bancos",0,tot]]);
   });
   return P;
 }
