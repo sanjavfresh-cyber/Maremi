@@ -1399,14 +1399,23 @@ async function onCFDIFiles(fileList){
     let tipo; if(d.rfc_emisor===rfc)tipo="emitido"; else if(d.rfc_receptor===rfc)tipo="recibido"; else {otro++;continue;}
     rows.push({comercio_id:CID,uuid:d.uuid,tipo,tipo_comp:d.tipo_comp,fecha:d.fecha,rfc_emisor:d.rfc_emisor,nombre_emisor:d.nombre_emisor,rfc_receptor:d.rfc_receptor,nombre_receptor:d.nombre_receptor,subtotal:d.subtotal,descuento:d.descuento,iva:d.iva,ret_iva:d.ret_iva,ret_isr:d.ret_isr,total:d.total,metodo_pago:d.metodo_pago,forma_pago:d.forma_pago,uso_cfdi:d.uso_cfdi,moneda:d.moneda,xml:d.xml});
   }
-  if(rows.length){
-    const {error}=await sb.from("cfdis").upsert(rows,{onConflict:"comercio_id,uuid",ignoreDuplicates:false}).select();
-    if(error){ if(/relation|does not exist|cfdis/i.test(error.message))toast("Falta crear la tabla 'cfdis' (corre el SQL)"); else toast("Error: "+error.message); return; }
-    ok=rows.length;
+  // quitar duplicados por uuid dentro del mismo lote (Postgres no deja tocar la misma fila 2 veces)
+  const vistos=new Set(), rows2=[];
+  for(const r of rows){ if(!r.uuid||vistos.has(r.uuid)){dup++;continue;} vistos.add(r.uuid); rows2.push(r); }
+  if(rows2.length){
+    // subir en bloques chicos, por si son muchos; upsert = no duplica con lo ya guardado
+    try{
+      for(let i=0;i<rows2.length;i+=50){
+        const chunk=rows2.slice(i,i+50);
+        const {error}=await sb.from("cfdis").upsert(chunk,{onConflict:"comercio_id,uuid",ignoreDuplicates:false}).select();
+        if(error){ if(/relation|does not exist|cfdis/i.test(error.message)){toast("Falta crear la tabla 'cfdis' (corre el SQL)");return;} throw error; }
+        ok+=chunk.length;
+      }
+    }catch(e){ toast("Error al guardar: "+(e.message||e)); }
     const xc=await sb.from("cfdis").select("*").eq("comercio_id",CID).order("fecha",{ascending:false});
     STATE.cfdis=(xc&&xc.data)||[];
   }
-  const msg=[ok?ok+" CFDI(s) cargados":"",bad?bad+" inválidos":"",otro?otro+" de otro RFC":""].filter(Boolean).join(" · ");
+  const msg=[ok?ok+" CFDI(s) cargados":"",dup?dup+" repetidos":"",bad?bad+" inválidos":"",otro?otro+" de otro RFC":""].filter(Boolean).join(" · ");
   toast(msg||"Sin cambios");
   renderCFDI();
 }
